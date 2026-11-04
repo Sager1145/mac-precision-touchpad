@@ -20,7 +20,7 @@ AmtPtpEmitReport(
 	_In_ LONGLONG NowQpc
 );
 
-static VOID
+static BOOLEAN
 AmtPtpInterpOnSample(
 	_In_ PDEVICE_CONTEXT DeviceContext,
 	_In_ PPTP_REPORT Sample,
@@ -509,13 +509,17 @@ AmtPtpServiceTouchInputInterruptType5(
 	// extrapolation between physical samples (125 Hz).
 	AcquireSRWLockExclusive(&DeviceContext->InterpolationLock);
 	QueryPerformanceCounter(&CurrentPerfCounter);
-	AmtPtpInterpOnSample(DeviceContext, &PtpReport, CurrentPerfCounter);
+	BOOLEAN transition = AmtPtpInterpOnSample(DeviceContext, &PtpReport, CurrentPerfCounter);
 	TraceLoggingWrite(g_hAmtPtpDeviceTraceProvider, "PhysicalInput",
 		TraceLoggingInt64(CurrentPerfCounter.QuadPart, "Qpc"),
 		TraceLoggingBinary(Buffer, (ULONG)NumBytesTransferred, "Packet"));
-	// Deliver the physical positions unchanged; only timer frames predict motion.
-	AmtPtpSetScanTime(DeviceContext, &PtpReport, CurrentPerfCounter.QuadPart);
-	AmtPtpEmitReport(DeviceContext, &PtpReport, CurrentPerfCounter.QuadPart);
+	// Only contact/button transitions bypass the timer. Emitting every raw
+	// movement here would reintroduce irregular spacing and prediction snaps.
+	if (transition) {
+		AmtPtpInterpBuildReport(DeviceContext, CurrentPerfCounter.QuadPart, &PtpReport);
+		AmtPtpSetScanTime(DeviceContext, &PtpReport, CurrentPerfCounter.QuadPart);
+		AmtPtpEmitReport(DeviceContext, &PtpReport, CurrentPerfCounter.QuadPart);
+	}
 	ReleaseSRWLockExclusive(&DeviceContext->InterpolationLock);
 
 	TraceEvents(
@@ -527,10 +531,9 @@ AmtPtpServiceTouchInputInterruptType5(
 }
 
 //
-// 125 Hz resampling: store the raw finger position (so flick velocity/momentum
-// is preserved) and a lightly low-passed velocity, then linearly extrapolate
-// between the ~66 Hz physical samples. The velocity is smoothed so the
-// extrapolated path is steady; the position itself is NOT filtered.
+// Continuous motion is sampled on the timer cadence. A short fixed delay
+// lets us interpolate actual samples rather than alternate prediction and
+// correction. Raw positions and motion amplitude are never low-pass filtered.
 //
 
 static double
@@ -543,7 +546,7 @@ AmtPtpInterpAlpha(
 	return 1.0 / (1.0 + tau / DtSec);
 }
 
-static VOID
+static BOOLEAN
 AmtPtpInterpOnSample(
 	_In_ PDEVICE_CONTEXT DeviceContext,
 	_In_ PPTP_REPORT Sample,
@@ -553,10 +556,22 @@ AmtPtpInterpOnSample(
 	double dtSec;
 	BOOLEAN seen[INTERP_MAX_FINGERS];
 	ULONG i;
+	ULONG oldMask = 0, newMask = 0;
+	BOOLEAN transition;
 
 	if (DeviceContext->QpcFrequency <= 0) {
-		return;
+		return FALSE;
 	}
+	for (i = 0; i < INTERP_MAX_FINGERS; i++) {
+		if (DeviceContext->InterpFingers[i].Active && DeviceContext->InterpFingers[i].TipSwitch)
+			oldMask |= 1UL << i;
+	}
+	for (i = 0; i < Sample->ContactCount; i++) {
+		if (Sample->Contacts[i].ContactID < INTERP_MAX_FINGERS && Sample->Contacts[i].TipSwitch)
+			newMask |= 1UL << Sample->Contacts[i].ContactID;
+	}
+	transition = !DeviceContext->InterpHasSample || oldMask != newMask ||
+		DeviceContext->InterpButton != Sample->IsButtonClicked;
 
 	dtSec = (double)(Now.QuadPart - DeviceContext->LastSampleTime.QuadPart) /
 			(double)DeviceContext->QpcFrequency;
@@ -585,6 +600,23 @@ AmtPtpInterpOnSample(
 		} else {
 			finger->Vx = 0.0;
 			finger->Vy = 0.0;
+			finger->HistoryCount = 0;
+		}
+		if (c->TipSwitch) {
+			// Equal timestamps replace the latest sample rather than divide by zero.
+			if (finger->HistoryCount &&
+				Now.QuadPart <= finger->History[finger->HistoryCount - 1].Time) {
+				finger->HistoryCount--;
+			}
+			if (finger->HistoryCount == INTERP_HISTORY_COUNT) {
+				RtlMoveMemory(&finger->History[0], &finger->History[1],
+					(INTERP_HISTORY_COUNT - 1) * sizeof(INTERP_POINT));
+				finger->HistoryCount--;
+			}
+			PINTERP_POINT point = &finger->History[finger->HistoryCount++];
+			point->X = (double)c->X;
+			point->Y = (double)c->Y;
+			point->Time = Now.QuadPart;
 		}
 
 		finger->X = (double)c->X;
@@ -605,6 +637,45 @@ AmtPtpInterpOnSample(
 	DeviceContext->InterpButton = Sample->IsButtonClicked;
 	DeviceContext->LastSampleTime = Now;
 	DeviceContext->InterpHasSample = TRUE;
+	return transition;
+}
+
+static VOID
+AmtPtpInterpPosition(
+	_In_ PDEVICE_CONTEXT DeviceContext,
+	_In_ PINTERP_FINGER Finger,
+	_In_ LONGLONG TargetQpc,
+	_Out_ double* X,
+	_Out_ double* Y
+)
+{
+	ULONG i;
+	*X = Finger->X;
+	*Y = Finger->Y;
+	if (!Finger->TipSwitch || !Finger->HistoryCount) return;
+	PINTERP_POINT first = &Finger->History[0];
+	if (TargetQpc <= first->Time) {
+		*X = first->X;
+		*Y = first->Y;
+		return;
+	}
+	for (i = 1; i < Finger->HistoryCount; i++) {
+		PINTERP_POINT a = &Finger->History[i - 1];
+		PINTERP_POINT b = &Finger->History[i];
+		if (TargetQpc <= b->Time) {
+			double t = (double)(TargetQpc - a->Time) / (double)(b->Time - a->Time);
+			*X = a->X + (b->X - a->X) * t;
+			*Y = a->Y + (b->Y - a->Y) * t;
+			return;
+		}
+	}
+	PINTERP_POINT last = &Finger->History[Finger->HistoryCount - 1];
+	LONGLONG elapsed = TargetQpc - last->Time;
+	LONGLONG cap = DeviceContext->QpcFrequency * INTERP_MAX_EXTRAP_MS / 1000;
+	if (elapsed > cap) elapsed = cap;
+	double seconds = (double)elapsed / (double)DeviceContext->QpcFrequency;
+	*X = last->X + Finger->Vx * seconds;
+	*Y = last->Y + Finger->Vy * seconds;
 }
 
 static VOID
@@ -614,8 +685,7 @@ AmtPtpInterpBuildReport(
 	_Out_ PPTP_REPORT Report
 )
 {
-	LONGLONG elapsedQpc, maxQpc;
-	double extrapSec;
+	LONGLONG targetQpc;
 	ULONG i;
 	ULONG count = 0;
 
@@ -628,11 +698,7 @@ AmtPtpInterpBuildReport(
 		return;
 	}
 
-	elapsedQpc = NowQpc - DeviceContext->LastSampleTime.QuadPart;
-	if (elapsedQpc < 0) elapsedQpc = 0;
-	maxQpc = (LONGLONG)DeviceContext->QpcFrequency * INTERP_MAX_EXTRAP_MS / 1000;
-	if (elapsedQpc > maxQpc) elapsedQpc = maxQpc;
-	extrapSec = (double)elapsedQpc / (double)DeviceContext->QpcFrequency;
+	targetQpc = NowQpc - DeviceContext->QpcFrequency * INTERP_DELAY_MS / 1000;
 
 	for (i = 0; i < INTERP_MAX_FINGERS; i++) {
 		PINTERP_FINGER finger = &DeviceContext->InterpFingers[i];
@@ -642,16 +708,10 @@ AmtPtpInterpBuildReport(
 
 		if (!finger->Active) continue;
 
-		if (finger->TipSwitch) {
-			px = finger->X + finger->Vx * extrapSec;
-			py = finger->Y + finger->Vy * extrapSec;
-		} else {
-			px = finger->X;
-			py = finger->Y;
-		}
+		AmtPtpInterpPosition(DeviceContext, finger, targetQpc, &px, &py);
 
-		xi = (LONG)px;
-		yi = (LONG)py;
+		xi = (LONG)(px + 0.5);
+		yi = (LONG)(py + 0.5);
 		if (xi < 0) xi = 0;
 		else if (xi > DeviceContext->DeviceInfo->x.max - DeviceContext->DeviceInfo->x.min)
 			xi = DeviceContext->DeviceInfo->x.max - DeviceContext->DeviceInfo->x.min;
@@ -769,12 +829,10 @@ AmtPtpEmitReport(
 }
 
 VOID
-AmtPtpInterpolationTimerCallback(
-	_In_ WDFTIMER Timer
+AmtPtpInterpolationTick(
+	_In_ PDEVICE_CONTEXT ctx
 )
 {
-	WDFDEVICE device = (WDFDEVICE)WdfTimerGetParentObject(Timer);
-	PDEVICE_CONTEXT ctx = DeviceGetContext(device);
 	PTP_REPORT report;
 	LARGE_INTEGER now;
 	LONGLONG sinceEmitMs;
@@ -805,6 +863,13 @@ AmtPtpInterpolationTimerCallback(
 	AmtPtpEmitReport(ctx, &report, now.QuadPart);
 	ctx->InterpTimerEmission = FALSE;
 	ReleaseSRWLockExclusive(&ctx->InterpolationLock);
+}
+
+VOID
+AmtPtpInterpolationTimerCallback(_In_ WDFTIMER Timer)
+{
+	WDFDEVICE device = (WDFDEVICE)WdfTimerGetParentObject(Timer);
+	AmtPtpInterpolationTick(DeviceGetContext(device));
 }
 
 // Helper function for numberic operation

@@ -3,6 +3,68 @@
 #include <driver.h>
 #include "device.tmh"
 
+static DWORD WINAPI
+AmtPtpResamplingThread(_In_ LPVOID Context)
+{
+	PDEVICE_CONTEXT ctx = (PDEVICE_CONTEXT)Context;
+	HANDLE waits[2] = { ctx->ResamplingStopEvent, ctx->ResamplingWaitTimer };
+	while (WaitForMultipleObjects(2, waits, FALSE, INFINITE) == WAIT_OBJECT_0 + 1) {
+		AmtPtpInterpolationTick(ctx);
+	}
+	return 0;
+}
+
+static VOID
+AmtPtpStopResampling(_In_ PDEVICE_CONTEXT Context)
+{
+	WdfTimerStop(Context->InterpolationTimer, TRUE);
+	if (Context->ResamplingThread != NULL) {
+		SetEvent(Context->ResamplingStopEvent);
+		WaitForSingleObject(Context->ResamplingThread, INFINITE);
+		CloseHandle(Context->ResamplingThread);
+		Context->ResamplingThread = NULL;
+	}
+	if (Context->ResamplingWaitTimer != NULL) {
+		CancelWaitableTimer(Context->ResamplingWaitTimer);
+		CloseHandle(Context->ResamplingWaitTimer);
+		Context->ResamplingWaitTimer = NULL;
+	}
+	if (Context->ResamplingStopEvent != NULL) {
+		CloseHandle(Context->ResamplingStopEvent);
+		Context->ResamplingStopEvent = NULL;
+	}
+}
+
+static VOID
+AmtPtpStartResampling(_In_ PDEVICE_CONTEXT Context)
+{
+	LARGE_INTEGER due;
+	// UMDF WDF timers have no high-resolution option. This synchronization
+	// timer wakes a dedicated worker without changing global clock resolution.
+	Context->ResamplingStopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+	Context->ResamplingWaitTimer = CreateWaitableTimerExW(NULL, NULL,
+		CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+	if (Context->ResamplingStopEvent == NULL || Context->ResamplingWaitTimer == NULL)
+		goto Fallback;
+	due.QuadPart = -(LONGLONG)INTERP_PERIOD_MS * 10000;
+	if (!SetWaitableTimerEx(Context->ResamplingWaitTimer, &due, INTERP_PERIOD_MS,
+		NULL, NULL, NULL, 0)) goto Fallback;
+	Context->ResamplingThread = CreateThread(NULL, 0, AmtPtpResamplingThread, Context, 0, NULL);
+	if (Context->ResamplingThread == NULL) goto Fallback;
+	TraceLoggingWrite(g_hAmtPtpDeviceTraceProvider, "ResamplingClock",
+		TraceLoggingBoolean(TRUE, "HighResolution"));
+	return;
+
+Fallback:
+	TraceLoggingWrite(g_hAmtPtpDeviceTraceProvider, "ResamplingClock",
+		TraceLoggingBoolean(FALSE, "HighResolution"),
+		TraceLoggingUInt32(GetLastError(), "Error"));
+	AmtPtpStopResampling(Context);
+	// Preserve device functionality on older systems where high resolution
+	// timers are unavailable, without failing device startup.
+	WdfTimerStart(Context->InterpolationTimer, WDF_REL_TIMEOUT_IN_MS(INTERP_PERIOD_MS));
+}
+
 _IRQL_requires_(PASSIVE_LEVEL)
 static const struct BCM5974_CONFIG*
 AmtPtpGetDeviceConfig(
@@ -605,10 +667,7 @@ AmtPtpEvtDeviceD0Entry(
 	//
 	// Start the resampling timer.
 	//
-	WdfTimerStart(
-		pDeviceContext->InterpolationTimer,
-		WDF_REL_TIMEOUT_IN_MS(INTERP_PERIOD_MS)
-	);
+	AmtPtpStartResampling(pDeviceContext);
 
 End:
 
@@ -658,7 +717,7 @@ AmtPtpEvtDeviceD0Exit(
 	//
 	// Stop the resampling timer.
 	//
-	WdfTimerStop(pDeviceContext->InterpolationTimer, TRUE);
+	AmtPtpStopResampling(pDeviceContext);
 	pDeviceContext->InterpHasSample = FALSE;
 
 	// Stop IO Pipe.
