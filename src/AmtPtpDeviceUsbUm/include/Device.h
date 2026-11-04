@@ -2,31 +2,6 @@
 
 EXTERN_C_START
 
-//
-// Interpolation (1-euro filter + 125 Hz resampling) state shared between the
-// USB interrupt handler and the periodic interpolation timer.
-//
-#define INTERP_MAX_FINGERS   16
-#define INTERP_PERIOD_MS     8
-#define INTERP_MIN_CUTOFF    3.0
-#define INTERP_BETA          0.007
-#define INTERP_DCUTOFF       5.0
-#define INTERP_MAX_EXTRAP_MS 15
-
-typedef struct _INTERP_FINGER
-{
-	BOOLEAN FilterInit;
-	double  Xf;
-	double  Yf;
-	double  Dxf;
-	double  Dyf;
-	double  XPrev;
-	double  YPrev;
-	BOOLEAN Active;
-	UCHAR   TipSwitch;
-	UCHAR   Confidence;
-} INTERP_FINGER, *PINTERP_FINGER;
-
 // Device context struct
 typedef struct _DEVICE_CONTEXT
 {
@@ -50,14 +25,7 @@ typedef struct _DEVICE_CONTEXT
 	BOOL                        IsButtonReportOn;
 
 	LARGE_INTEGER				PerfCounter;
-
-	WDFTIMER					InterpolationTimer;
 	LONGLONG					QpcFrequency;
-	LARGE_INTEGER				LastSampleTime;
-	LARGE_INTEGER				LastEmitTime;
-	BOOLEAN						InterpHasSample;
-	INTERP_FINGER				InterpFingers[INTERP_MAX_FINGERS];
-	UCHAR						InterpButton;
 
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
@@ -89,8 +57,6 @@ AmtPtpCreateDevice(
 EVT_WDF_DEVICE_PREPARE_HARDWARE AmtPtpEvtDevicePrepareHardware;
 EVT_WDF_DEVICE_D0_ENTRY AmtPtpEvtDeviceD0Entry;
 EVT_WDF_DEVICE_D0_EXIT AmtPtpEvtDeviceD0Exit;
-
-EVT_WDF_TIMER AmtPtpInterpolationTimerCallback;
 
 _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS

@@ -34,10 +34,6 @@ AmtPtpCreateDevice(
 	PDEVICE_CONTEXT						deviceContext;
 	WDFDEVICE							device;
 	NTSTATUS							status;
-	WDF_TIMER_CONFIG					timerConfig;
-	WDF_OBJECT_ATTRIBUTES				timerAttributes;
-	LARGE_INTEGER						qpcFrequency;
-	LARGE_INTEGER						qpcNow;
 
 	UNREFERENCED_PARAMETER(Driver);
 	PAGED_CODE();
@@ -110,39 +106,6 @@ AmtPtpCreateDevice(
 		// Initialize the I/O Package and any Queues
 		//
 		status = AmtPtpDeviceQueueInitialize(device);
-	}
-
-	//
-	// Set up the interpolation timer: resamples the 1-euro-filtered finger state
-	// at 125 Hz (INTERP_PERIOD_MS) between ~66 Hz physical reports.
-	//
-	if (NT_SUCCESS(status)) {
-		QueryPerformanceFrequency(&qpcFrequency);
-		QueryPerformanceCounter(&qpcNow);
-		deviceContext->QpcFrequency = qpcFrequency.QuadPart;
-		deviceContext->LastSampleTime = qpcNow;
-		deviceContext->LastEmitTime = qpcNow;
-		deviceContext->InterpHasSample = FALSE;
-
-		WDF_TIMER_CONFIG_INIT_PERIODIC(
-			&timerConfig,
-			AmtPtpInterpolationTimerCallback,
-			INTERP_PERIOD_MS
-		);
-
-		WDF_OBJECT_ATTRIBUTES_INIT(&timerAttributes);
-		timerAttributes.ParentObject = device;
-
-		status = WdfTimerCreate(
-			&timerConfig,
-			&timerAttributes,
-			&deviceContext->InterpolationTimer
-		);
-
-		if (!NT_SUCCESS(status)) {
-			TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER,
-				"%!FUNC! WdfTimerCreate failed with Status code %!STATUS!", status);
-		}
 	}
 
 	TraceEvents(
@@ -541,6 +504,7 @@ AmtPtpEvtDeviceD0Entry(
 	PDEVICE_CONTEXT         pDeviceContext;
 	NTSTATUS                status;
 	BOOLEAN                 isTargetStarted;
+	LARGE_INTEGER           qpcFrequency;
 
 	pDeviceContext = DeviceGetContext(Device);
 	isTargetStarted = FALSE;
@@ -576,6 +540,10 @@ AmtPtpEvtDeviceD0Entry(
 	}
 
 	// Get current time counter
+	QueryPerformanceFrequency(
+		&qpcFrequency
+	);
+	pDeviceContext->QpcFrequency = qpcFrequency.QuadPart;
 	QueryPerformanceCounter(
 		&pDeviceContext->PerfCounter
 	);
@@ -596,14 +564,6 @@ AmtPtpEvtDeviceD0Entry(
 	}
 
 	isTargetStarted = TRUE;
-
-	//
-	// Start the interpolation timer.
-	//
-	WdfTimerStart(
-		pDeviceContext->InterpolationTimer,
-		WDF_REL_TIMEOUT_IN_MS(INTERP_PERIOD_MS)
-	);
 
 End:
 
@@ -649,12 +609,6 @@ AmtPtpEvtDeviceD0Exit(
 	);
 
 	pDeviceContext = DeviceGetContext(Device);
-
-	//
-	// Stop the interpolation timer.
-	//
-	WdfTimerStop(pDeviceContext->InterpolationTimer, TRUE);
-	pDeviceContext->InterpHasSample = FALSE;
 
 	// Stop IO Pipe.
 	WdfIoTargetStop(WdfUsbTargetPipeGetIoTarget(
