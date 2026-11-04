@@ -88,6 +88,9 @@ AmtPtpHidFilter.sys   = 1,,
 %AmtPtpDeviceUsbUm.DeviceDesc%=AmtPtpDeviceUsbUm_Install, USB\Vid_05ac&Pid_0265&MI_01
 ; Magic Trackpad 3 (USB-C, 2024)
 %AmtPtpDeviceUsbUm.DeviceDesc%=AmtPtpDeviceUsbUm_Install, USB\Vid_05ac&Pid_0324&MI_01
+; Magic Trackpad 3 (USB-C) interface 0 has an invalid HID report descriptor
+; (hidusb fails to start with Code 10). Bind a null device so it is ignored.
+%AmtPtpHidFilter.NullDeviceDesc%=AmtPtpHidFilter_NullDevice, USB\Vid_05ac&Pid_0324&MI_00
 ; Magic Trackpad 2 Bluetooth
 %AmtPtpHidFilter.DeviceDesc%=AmtPtpHidFilter_MiniPortDevice, HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0265&Col01
 %AmtPtpHidFilter.NullDeviceDesc%=AmtPtpHidFilter_NullDevice, HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0265&Col02
