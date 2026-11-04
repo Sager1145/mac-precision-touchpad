@@ -80,6 +80,7 @@ AmtPtpCreateDevice(
 	// run under framework verifier mode.
 	//
 	deviceContext = DeviceGetContext(device);
+	InitializeSRWLock(&deviceContext->InterpolationLock);
 
 	//
 	// Tell the framework to set the SurpriseRemovalOK in the DeviceCaps so
@@ -120,6 +121,7 @@ AmtPtpCreateDevice(
 			AmtPtpInterpolationTimerCallback,
 			INTERP_PERIOD_MS
 		);
+		timerConfig.AutomaticSerialization = TRUE;
 
 		WDF_OBJECT_ATTRIBUTES_INIT(&timerAttributes);
 		timerAttributes.ParentObject = device;
@@ -578,6 +580,10 @@ AmtPtpEvtDeviceD0Entry(
 	pDeviceContext->LastSampleTime = pDeviceContext->PerfCounter;
 	pDeviceContext->LastEmitTime = pDeviceContext->PerfCounter;
 	pDeviceContext->InterpHasSample = FALSE;
+	RtlZeroMemory(pDeviceContext->InterpFingers, sizeof(pDeviceContext->InterpFingers));
+	pDeviceContext->InterpButton = FALSE;
+	RtlZeroMemory(&pDeviceContext->LastDeliveredReport, sizeof(PTP_REPORT));
+	pDeviceContext->InterpTimerEmission = FALSE;
 
 	//
 	// Since continuous reader is configured for this interrupt-pipe, we must explicitly start
