@@ -3,16 +3,23 @@
 EXTERN_C_START
 
 //
-// 125 Hz resampling state: store the raw finger position and instantaneous
-// velocity, then linearly extrapolate between the ~66 Hz physical samples.
-// No position smoothing/filtering - Windows PTP does that itself; we only raise
-// the report rate so its flick/momentum detection works, and lightly low-pass
-// the velocity so the extrapolated path is steady.
+// Fixed-cadence resampling with a short history, not a position low-pass filter.
+// Interpolate measured points 12ms behind acquisition; use filtered velocity
+// only when that point in time is newer than the available physical samples.
 //
 #define INTERP_MAX_FINGERS   16
 #define INTERP_PERIOD_MS     8
 #define INTERP_MAX_EXTRAP_MS 15
 #define INTERP_DCUTOFF       15.0
+#define INTERP_DELAY_MS      12
+#define INTERP_HISTORY_COUNT 8
+
+typedef struct _INTERP_POINT
+{
+	double X;
+	double Y;
+	LONGLONG Time;
+} INTERP_POINT, *PINTERP_POINT;
 
 typedef struct _INTERP_FINGER
 {
@@ -23,6 +30,8 @@ typedef struct _INTERP_FINGER
 	BOOLEAN Active;
 	UCHAR   TipSwitch;
 	UCHAR   Confidence;
+	ULONG   HistoryCount;
+	INTERP_POINT History[INTERP_HISTORY_COUNT];
 } INTERP_FINGER, *PINTERP_FINGER;
 
 // Device context struct
@@ -58,6 +67,9 @@ typedef struct _DEVICE_CONTEXT
 	UCHAR						InterpButton;
 	PTP_REPORT                  LastDeliveredReport;
 	BOOLEAN                     InterpTimerEmission;
+	HANDLE                      ResamplingWaitTimer;
+	HANDLE                      ResamplingStopEvent;
+	HANDLE                      ResamplingThread;
 
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
@@ -91,6 +103,8 @@ EVT_WDF_DEVICE_D0_ENTRY AmtPtpEvtDeviceD0Entry;
 EVT_WDF_DEVICE_D0_EXIT AmtPtpEvtDeviceD0Exit;
 
 EVT_WDF_TIMER AmtPtpInterpolationTimerCallback;
+
+VOID AmtPtpInterpolationTick(_In_ PDEVICE_CONTEXT DeviceContext);
 
 _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS
