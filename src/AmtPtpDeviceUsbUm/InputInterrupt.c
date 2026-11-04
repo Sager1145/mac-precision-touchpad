@@ -482,7 +482,7 @@ AmtPtpServiceTouchInputInterruptType5(
 			UINT tmp_y = (INT)(*((UINT*)f_type5));
 
 			x = (SHORT) (tmp_x << 3) >> 3;
-			y = -(INT) (tmp_y << 6) >> 19;
+			y = -((INT) (tmp_y << 6) >> 19);
 
 			x = (x - DeviceContext->DeviceInfo->x.min) > 0 ? (x - DeviceContext->DeviceInfo->x.min) : 0;
 			y = (y - DeviceContext->DeviceInfo->y.min) > 0 ? (y - DeviceContext->DeviceInfo->y.min) : 0;
@@ -507,11 +507,16 @@ AmtPtpServiceTouchInputInterruptType5(
 	// Store the raw sample (position + instantaneous velocity) and emit the raw
 	// position immediately. The periodic timer resamples with linear
 	// extrapolation between physical samples (125 Hz).
+	AcquireSRWLockExclusive(&DeviceContext->InterpolationLock);
 	QueryPerformanceCounter(&CurrentPerfCounter);
 	AmtPtpInterpOnSample(DeviceContext, &PtpReport, CurrentPerfCounter);
-	AmtPtpInterpBuildReport(DeviceContext, CurrentPerfCounter.QuadPart, &PtpReport);
+	TraceLoggingWrite(g_hAmtPtpDeviceTraceProvider, "PhysicalInput",
+		TraceLoggingInt64(CurrentPerfCounter.QuadPart, "Qpc"),
+		TraceLoggingBinary(Buffer, (ULONG)NumBytesTransferred, "Packet"));
+	// Deliver the physical positions unchanged; only timer frames predict motion.
 	AmtPtpSetScanTime(DeviceContext, &PtpReport, CurrentPerfCounter.QuadPart);
 	AmtPtpEmitReport(DeviceContext, &PtpReport, CurrentPerfCounter.QuadPart);
+	ReleaseSRWLockExclusive(&DeviceContext->InterpolationLock);
 
 	TraceEvents(
 		TRACE_LEVEL_INFORMATION,
@@ -522,11 +527,21 @@ AmtPtpServiceTouchInputInterruptType5(
 }
 
 //
-// Simple 125 Hz resampling: store the raw finger position and the instantaneous
-// velocity, then linearly extrapolate between the ~66 Hz physical samples. No
-// smoothing/filtering - Windows Precision Touchpad does that itself; we only
-// raise the report rate so its flick/momentum detection works.
+// 125 Hz resampling: store the raw finger position (so flick velocity/momentum
+// is preserved) and a lightly low-passed velocity, then linearly extrapolate
+// between the ~66 Hz physical samples. The velocity is smoothed so the
+// extrapolated path is steady; the position itself is NOT filtered.
 //
+
+static double
+AmtPtpInterpAlpha(
+	_In_ double CutoffHz,
+	_In_ double DtSec
+)
+{
+	double tau = 1.0 / (2.0 * 3.14159265358979323846 * CutoffHz);
+	return 1.0 / (1.0 + tau / DtSec);
+}
 
 static VOID
 AmtPtpInterpOnSample(
@@ -561,9 +576,12 @@ AmtPtpInterpOnSample(
 		}
 		finger = &DeviceContext->InterpFingers[id];
 
-		if (finger->Active) {
-			finger->Vx = ((double)c->X - finger->X) / dtSec;
-			finger->Vy = ((double)c->Y - finger->Y) / dtSec;
+		if (finger->Active && finger->TipSwitch && c->TipSwitch) {
+			double a = AmtPtpInterpAlpha(INTERP_DCUTOFF, dtSec);
+			double dx = ((double)c->X - finger->X) / dtSec;
+			double dy = ((double)c->Y - finger->Y) / dtSec;
+			finger->Vx = finger->Vx + a * (dx - finger->Vx);
+			finger->Vy = finger->Vy + a * (dy - finger->Vy);
 		} else {
 			finger->Vx = 0.0;
 			finger->Vy = 0.0;
@@ -635,9 +653,11 @@ AmtPtpInterpBuildReport(
 		xi = (LONG)px;
 		yi = (LONG)py;
 		if (xi < 0) xi = 0;
-		else if (xi > 0xFFFF) xi = 0xFFFF;
+		else if (xi > DeviceContext->DeviceInfo->x.max - DeviceContext->DeviceInfo->x.min)
+			xi = DeviceContext->DeviceInfo->x.max - DeviceContext->DeviceInfo->x.min;
 		if (yi < 0) yi = 0;
-		else if (yi > 0xFFFF) yi = 0xFFFF;
+		else if (yi > DeviceContext->DeviceInfo->y.max - DeviceContext->DeviceInfo->y.min)
+			yi = DeviceContext->DeviceInfo->y.max - DeviceContext->DeviceInfo->y.min;
 
 		c = &Report->Contacts[count];
 		c->ContactID = i;
@@ -666,9 +686,9 @@ AmtPtpSetScanTime(
 		return;
 	}
 
-	delta = (NowQpc - DeviceContext->LastEmitTime.QuadPart) * 10000 / DeviceContext->QpcFrequency;
+	// HID ScanTime is an advancing 16-bit counter; LastEmitTime only gates ticks.
+	delta = (NowQpc - DeviceContext->PerfCounter.QuadPart) * 10000 / DeviceContext->QpcFrequency;
 	if (delta < 0) delta = 0;
-	if (delta > 0xFFFF) delta = 0xFFFF;
 	Report->ScanTime = (USHORT)delta;
 }
 
@@ -682,23 +702,66 @@ AmtPtpEmitReport(
 	WDFREQUEST Request;
 	WDFMEMORY RequestMemory;
 	NTSTATUS Status;
+	PTP_REPORT normalized = { 0 };
+	BOOLEAN included[INTERP_MAX_FINGERS] = { 0 };
+	ULONG i, j;
+
+	normalized.ReportID = REPORTID_MULTITOUCH;
+	normalized.ScanTime = Report->ScanTime;
+	normalized.IsButtonClicked = Report->IsButtonClicked;
+	// Keep existing contacts or release them exactly once, at the last
+	// position actually delivered (which may have been a timer prediction).
+	for (i = 0; i < DeviceContext->LastDeliveredReport.ContactCount; i++) {
+		PTP_CONTACT c = DeviceContext->LastDeliveredReport.Contacts[i];
+		if (!c.TipSwitch) continue;
+		included[c.ContactID] = TRUE;
+		for (j = 0; j < Report->ContactCount; j++) {
+			if (Report->Contacts[j].ContactID == c.ContactID) break;
+		}
+		if (j < Report->ContactCount && Report->Contacts[j].TipSwitch) {
+			c = Report->Contacts[j];
+		} else {
+			c.TipSwitch = FALSE;
+		}
+		normalized.Contacts[normalized.ContactCount++] = c;
+	}
+	for (i = 0; i < Report->ContactCount && normalized.ContactCount < PTP_MAX_CONTACT_POINTS; i++) {
+		PTP_CONTACT c = Report->Contacts[i];
+		if (c.ContactID < INTERP_MAX_FINGERS && !included[c.ContactID] && c.TipSwitch) {
+			included[c.ContactID] = TRUE;
+			normalized.Contacts[normalized.ContactCount++] = c;
+		}
+	}
+	if (!normalized.ContactCount &&
+		normalized.IsButtonClicked == DeviceContext->LastDeliveredReport.IsButtonClicked) {
+		return STATUS_SUCCESS;
+	}
 
 	Status = WdfIoQueueRetrieveNextRequest(DeviceContext->InputQueue, &Request);
 	if (!NT_SUCCESS(Status)) {
+		TraceLoggingWrite(g_hAmtPtpDeviceTraceProvider, "InputReadUnavailable",
+			TraceLoggingInt64(NowQpc, "Qpc"), TraceLoggingNTStatus(Status, "Status"));
 		return Status;
 	}
 
 	Status = WdfRequestRetrieveOutputMemory(Request, &RequestMemory);
 	if (!NT_SUCCESS(Status)) {
+		WdfRequestComplete(Request, Status);
 		return Status;
 	}
 
-	Status = WdfMemoryCopyFromBuffer(RequestMemory, 0, (PVOID)Report, sizeof(PTP_REPORT));
+	Status = WdfMemoryCopyFromBuffer(RequestMemory, 0, &normalized, sizeof(PTP_REPORT));
 	if (!NT_SUCCESS(Status)) {
+		WdfRequestComplete(Request, Status);
 		return Status;
 	}
 
 	WdfRequestSetInformation(Request, sizeof(PTP_REPORT));
+	DeviceContext->LastDeliveredReport = normalized;
+	TraceLoggingWrite(g_hAmtPtpDeviceTraceProvider, "DeliveredInput",
+		TraceLoggingInt64(NowQpc, "Qpc"),
+		TraceLoggingBoolean(DeviceContext->InterpTimerEmission, "Timer"),
+		TraceLoggingBinary(&normalized, sizeof(normalized), "Report"));
 	WdfRequestComplete(Request, Status);
 
 	DeviceContext->LastEmitTime.QuadPart = NowQpc;
@@ -716,7 +779,12 @@ AmtPtpInterpolationTimerCallback(
 	LARGE_INTEGER now;
 	LONGLONG sinceEmitMs;
 
-	if (ctx == NULL || !ctx->InterpHasSample) {
+	if (ctx == NULL) {
+		return;
+	}
+	AcquireSRWLockExclusive(&ctx->InterpolationLock);
+	if (!ctx->InterpHasSample) {
+		ReleaseSRWLockExclusive(&ctx->InterpolationLock);
 		return;
 	}
 
@@ -726,13 +794,17 @@ AmtPtpInterpolationTimerCallback(
 	if (ctx->QpcFrequency > 0) {
 		sinceEmitMs = (now.QuadPart - ctx->LastEmitTime.QuadPart) * 1000 / ctx->QpcFrequency;
 		if (sinceEmitMs < (LONGLONG)(INTERP_PERIOD_MS - 1)) {
+			ReleaseSRWLockExclusive(&ctx->InterpolationLock);
 			return;
 		}
 	}
 
 	AmtPtpInterpBuildReport(ctx, now.QuadPart, &report);
 	AmtPtpSetScanTime(ctx, &report, now.QuadPart);
+	ctx->InterpTimerEmission = TRUE;
 	AmtPtpEmitReport(ctx, &report, now.QuadPart);
+	ctx->InterpTimerEmission = FALSE;
+	ReleaseSRWLockExclusive(&ctx->InterpolationLock);
 }
 
 // Helper function for numberic operation

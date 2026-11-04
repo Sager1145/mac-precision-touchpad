@@ -5,12 +5,14 @@ EXTERN_C_START
 //
 // 125 Hz resampling state: store the raw finger position and instantaneous
 // velocity, then linearly extrapolate between the ~66 Hz physical samples.
-// No smoothing/filtering - Windows PTP does that itself; we only raise the
-// report rate so its flick/momentum detection works.
+// No position smoothing/filtering - Windows PTP does that itself; we only raise
+// the report rate so its flick/momentum detection works, and lightly low-pass
+// the velocity so the extrapolated path is steady.
 //
 #define INTERP_MAX_FINGERS   16
 #define INTERP_PERIOD_MS     8
 #define INTERP_MAX_EXTRAP_MS 15
+#define INTERP_DCUTOFF       15.0
 
 typedef struct _INTERP_FINGER
 {
@@ -48,11 +50,14 @@ typedef struct _DEVICE_CONTEXT
 	LARGE_INTEGER				PerfCounter;
 	LONGLONG					QpcFrequency;
 	WDFTIMER					InterpolationTimer;
+	SRWLOCK                     InterpolationLock;
 	LARGE_INTEGER				LastSampleTime;
 	LARGE_INTEGER				LastEmitTime;
 	BOOLEAN						InterpHasSample;
 	INTERP_FINGER				InterpFingers[INTERP_MAX_FINGERS];
 	UCHAR						InterpButton;
+	PTP_REPORT                  LastDeliveredReport;
+	BOOLEAN                     InterpTimerEmission;
 
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
