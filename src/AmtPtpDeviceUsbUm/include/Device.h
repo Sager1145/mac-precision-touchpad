@@ -2,6 +2,27 @@
 
 EXTERN_C_START
 
+//
+// 125 Hz resampling state: store the raw finger position and instantaneous
+// velocity, then linearly extrapolate between the ~66 Hz physical samples.
+// No smoothing/filtering - Windows PTP does that itself; we only raise the
+// report rate so its flick/momentum detection works.
+//
+#define INTERP_MAX_FINGERS   16
+#define INTERP_PERIOD_MS     8
+#define INTERP_MAX_EXTRAP_MS 15
+
+typedef struct _INTERP_FINGER
+{
+	double  X;
+	double  Y;
+	double  Vx;
+	double  Vy;
+	BOOLEAN Active;
+	UCHAR   TipSwitch;
+	UCHAR   Confidence;
+} INTERP_FINGER, *PINTERP_FINGER;
+
 // Device context struct
 typedef struct _DEVICE_CONTEXT
 {
@@ -26,6 +47,12 @@ typedef struct _DEVICE_CONTEXT
 
 	LARGE_INTEGER				PerfCounter;
 	LONGLONG					QpcFrequency;
+	WDFTIMER					InterpolationTimer;
+	LARGE_INTEGER				LastSampleTime;
+	LARGE_INTEGER				LastEmitTime;
+	BOOLEAN						InterpHasSample;
+	INTERP_FINGER				InterpFingers[INTERP_MAX_FINGERS];
+	UCHAR						InterpButton;
 
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
@@ -57,6 +84,8 @@ AmtPtpCreateDevice(
 EVT_WDF_DEVICE_PREPARE_HARDWARE AmtPtpEvtDevicePrepareHardware;
 EVT_WDF_DEVICE_D0_ENTRY AmtPtpEvtDeviceD0Entry;
 EVT_WDF_DEVICE_D0_EXIT AmtPtpEvtDeviceD0Exit;
+
+EVT_WDF_TIMER AmtPtpInterpolationTimerCallback;
 
 _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS

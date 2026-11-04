@@ -3,6 +3,37 @@
 #include <driver.h>
 #include "InputInterrupt.tmh"
 
+//
+// Forward declarations for the resampling helpers used by the Type 5 handler.
+//
+static VOID
+AmtPtpSetScanTime(
+	_In_ PDEVICE_CONTEXT DeviceContext,
+	_In_ PPTP_REPORT Report,
+	_In_ LONGLONG NowQpc
+);
+
+static NTSTATUS
+AmtPtpEmitReport(
+	_In_ PDEVICE_CONTEXT DeviceContext,
+	_In_ PPTP_REPORT Report,
+	_In_ LONGLONG NowQpc
+);
+
+static VOID
+AmtPtpInterpOnSample(
+	_In_ PDEVICE_CONTEXT DeviceContext,
+	_In_ PPTP_REPORT Sample,
+	_In_ LARGE_INTEGER Now
+);
+
+static VOID
+AmtPtpInterpBuildReport(
+	_In_ PDEVICE_CONTEXT DeviceContext,
+	_In_ LONGLONG NowQpc,
+	_Out_ PPTP_REPORT Report
+);
+
 _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS
 AmtPtpConfigContReaderForInterruptEndPoint(
@@ -414,24 +445,19 @@ AmtPtpServiceTouchInputInterruptType5(
 	_In_ size_t NumBytesTransferred
 )
 {
-
-	NTSTATUS   Status;
-	WDFREQUEST Request;
-	WDFMEMORY  RequestMemory;
 	PTP_REPORT PtpReport;
 	LARGE_INTEGER CurrentPerfCounter;
-	LONGLONG PerfCounterDelta;
 
 	const struct TRACKPAD_FINGER *f;
 	const struct TRACKPAD_FINGER_TYPE5 *f_type5;
 
 	TraceEvents(
-		TRACE_LEVEL_INFORMATION, 
-		TRACE_DRIVER, 
+		TRACE_LEVEL_INFORMATION,
+		TRACE_DRIVER,
 		"%!FUNC! Entry"
 	);
 
-	Status = STATUS_SUCCESS;
+	RtlZeroMemory(&PtpReport, sizeof(PTP_REPORT));
 	PtpReport.ReportID = REPORTID_MULTITOUCH;
 	PtpReport.IsButtonClicked = 0;
 
@@ -440,67 +466,14 @@ AmtPtpServiceTouchInputInterruptType5(
 	size_t headerSize = (unsigned int) DeviceContext->DeviceInfo->tp_header;
 	size_t fingerprintSize = (unsigned int) DeviceContext->DeviceInfo->tp_fsize;
 
-	Status = WdfIoQueueRetrieveNextRequest(
-		DeviceContext->InputQueue,
-		&Request
-	);
-
-	if (!NT_SUCCESS(Status)) {
-		TraceEvents(
-			TRACE_LEVEL_INFORMATION, 
-			TRACE_DRIVER, 
-			"%!FUNC! No pending PTP request. Interrupt disposed"
-		);
-		goto exit;
-	}
-
-	Status = WdfRequestRetrieveOutputMemory(
-		Request, 
-		&RequestMemory
-	);
-	if (!NT_SUCCESS(Status)) {
-		TraceEvents(
-			TRACE_LEVEL_ERROR, 
-			TRACE_DRIVER, 
-			"%!FUNC! WdfRequestRetrieveOutputBuffer failed with %!STATUS!", 
-			Status
-		);
-		goto exit;
-	}
-
-	QueryPerformanceCounter(
-		&CurrentPerfCounter
-	);
-
-	// Scan time is in 100us
-	PerfCounterDelta = (CurrentPerfCounter.QuadPart - DeviceContext->PerfCounter.QuadPart) * 10000 / DeviceContext->QpcFrequency;
-	DeviceContext->PerfCounter = CurrentPerfCounter;
-	// Only two bytes allocated
-	if (PerfCounterDelta > 0xFF)
-	{
-		PerfCounterDelta = 0xFF;
-	}
-
-	PtpReport.ScanTime = (USHORT) PerfCounterDelta;
-
 	// Type 5 finger report
 	if (DeviceContext->IsSurfaceReportOn) {
 		raw_n = (NumBytesTransferred - headerSize) / fingerprintSize;
 		if (raw_n >= PTP_MAX_CONTACT_POINTS) raw_n = PTP_MAX_CONTACT_POINTS;
 		PtpReport.ContactCount = (UCHAR)raw_n;
 
-#ifdef INPUT_CONTENT_TRACE
-		TraceEvents(
-			TRACE_LEVEL_INFORMATION,
-			TRACE_DRIVER,
-			"%!FUNC! with %llu points.",
-			raw_n
-		);
-#endif
-
 		// Fingers to array
 		for (i = 0; i < raw_n; i++) {
-
 			UCHAR *f_base = Buffer + headerSize + DeviceContext->DeviceInfo->tp_delta;
 			f = (const struct TRACKPAD_FINGER*) (f_base + i * fingerprintSize);
 			f_type5 = (const struct TRACKPAD_FINGER_TYPE5*) f;
@@ -518,27 +491,9 @@ AmtPtpServiceTouchInputInterruptType5(
 			PtpReport.Contacts[i].X = (USHORT) x;
 			PtpReport.Contacts[i].Y = (USHORT) y;
 			// Use the dedicated touch-state bits (high two bits of AbsoluteY[1]):
-			// state == 0x80 means the finger is in contact. Reporting the touch
-			// area as a proxy (old code) reports the lift late and breaks
-			// flick/momentum detection.
+			// state == 0x80 means the finger is in contact.
 			PtpReport.Contacts[i].TipSwitch = ((f_type5->AbsoluteY[1] & 0xC0) == 0x80);
 			PtpReport.Contacts[i].Confidence = TRUE;
-
-#ifdef INPUT_CONTENT_TRACE
-			TraceEvents(
-				TRACE_LEVEL_INFORMATION,
-				TRACE_INPUT,
-				"%!FUNC!: Point %llu, X = %d, Y = %d, TipSwitch = %d, Confidence = %d, tMajor = %d, tMinor = %d, origin = %d",
-				i,
-				PtpReport.Contacts[i].X,
-				PtpReport.Contacts[i].Y,
-				PtpReport.Contacts[i].TipSwitch,
-				PtpReport.Contacts[i].Confidence,
-				AmtRawToInteger(f_type5->TouchMajor) << 1,
-				AmtRawToInteger(f_type5->TouchMinor) << 1,
-				f_type5->ContactIdentifier.Id
-			);
-#endif
 		}
 	}
 
@@ -549,44 +504,235 @@ AmtPtpServiceTouchInputInterruptType5(
 		}
 	}
 
-	// Write output
-	Status = WdfMemoryCopyFromBuffer(
-		RequestMemory, 
-		0, 
-		(PVOID) &PtpReport, 
-		sizeof(PTP_REPORT)
-	);
+	// Store the raw sample (position + instantaneous velocity) and emit the raw
+	// position immediately. The periodic timer resamples with linear
+	// extrapolation between physical samples (125 Hz).
+	QueryPerformanceCounter(&CurrentPerfCounter);
+	AmtPtpInterpOnSample(DeviceContext, &PtpReport, CurrentPerfCounter);
+	AmtPtpInterpBuildReport(DeviceContext, CurrentPerfCounter.QuadPart, &PtpReport);
+	AmtPtpSetScanTime(DeviceContext, &PtpReport, CurrentPerfCounter.QuadPart);
+	AmtPtpEmitReport(DeviceContext, &PtpReport, CurrentPerfCounter.QuadPart);
 
-	if (!NT_SUCCESS(Status)) {
-		TraceEvents(
-			TRACE_LEVEL_ERROR, 
-			TRACE_DRIVER, 
-			"%!FUNC! WdfMemoryCopyFromBuffer failed with %!STATUS!", 
-			Status
-		);
-		goto exit;
-	}
-
-	// Set result
-	WdfRequestSetInformation(
-		Request, 
-		sizeof(PTP_REPORT)
-	);
-
-	// Set completion flag
-	WdfRequestComplete(
-		Request, 
-		Status
-	);
-
-exit:
 	TraceEvents(
-		TRACE_LEVEL_INFORMATION, 
-		TRACE_DRIVER, 
+		TRACE_LEVEL_INFORMATION,
+		TRACE_DRIVER,
 		"%!FUNC! Exit"
 	);
-	return Status;
+	return STATUS_SUCCESS;
+}
 
+//
+// Simple 125 Hz resampling: store the raw finger position and the instantaneous
+// velocity, then linearly extrapolate between the ~66 Hz physical samples. No
+// smoothing/filtering - Windows Precision Touchpad does that itself; we only
+// raise the report rate so its flick/momentum detection works.
+//
+
+static VOID
+AmtPtpInterpOnSample(
+	_In_ PDEVICE_CONTEXT DeviceContext,
+	_In_ PPTP_REPORT Sample,
+	_In_ LARGE_INTEGER Now
+)
+{
+	double dtSec;
+	BOOLEAN seen[INTERP_MAX_FINGERS];
+	ULONG i;
+
+	if (DeviceContext->QpcFrequency <= 0) {
+		return;
+	}
+
+	dtSec = (double)(Now.QuadPart - DeviceContext->LastSampleTime.QuadPart) /
+			(double)DeviceContext->QpcFrequency;
+	if (dtSec <= 0.0) {
+		dtSec = 0.001;
+	}
+
+	RtlZeroMemory(seen, sizeof(seen));
+
+	for (i = 0; i < Sample->ContactCount; i++) {
+		PPTP_CONTACT c = &Sample->Contacts[i];
+		ULONG id = c->ContactID;
+		PINTERP_FINGER finger;
+
+		if (id >= INTERP_MAX_FINGERS) {
+			continue;
+		}
+		finger = &DeviceContext->InterpFingers[id];
+
+		if (finger->Active) {
+			finger->Vx = ((double)c->X - finger->X) / dtSec;
+			finger->Vy = ((double)c->Y - finger->Y) / dtSec;
+		} else {
+			finger->Vx = 0.0;
+			finger->Vy = 0.0;
+		}
+
+		finger->X = (double)c->X;
+		finger->Y = (double)c->Y;
+		finger->Active = TRUE;
+		finger->TipSwitch = c->TipSwitch;
+		finger->Confidence = c->Confidence;
+		seen[id] = TRUE;
+	}
+
+	// Deactivate fingers that are no longer reported.
+	for (i = 0; i < INTERP_MAX_FINGERS; i++) {
+		if (!seen[i]) {
+			DeviceContext->InterpFingers[i].Active = FALSE;
+		}
+	}
+
+	DeviceContext->InterpButton = Sample->IsButtonClicked;
+	DeviceContext->LastSampleTime = Now;
+	DeviceContext->InterpHasSample = TRUE;
+}
+
+static VOID
+AmtPtpInterpBuildReport(
+	_In_ PDEVICE_CONTEXT DeviceContext,
+	_In_ LONGLONG NowQpc,
+	_Out_ PPTP_REPORT Report
+)
+{
+	LONGLONG elapsedQpc, maxQpc;
+	double extrapSec;
+	ULONG i;
+	ULONG count = 0;
+
+	RtlZeroMemory(Report, sizeof(PTP_REPORT));
+	Report->ReportID = REPORTID_MULTITOUCH;
+	Report->IsButtonClicked = DeviceContext->InterpButton;
+
+	if (!DeviceContext->IsSurfaceReportOn || !DeviceContext->InterpHasSample ||
+		DeviceContext->QpcFrequency <= 0) {
+		return;
+	}
+
+	elapsedQpc = NowQpc - DeviceContext->LastSampleTime.QuadPart;
+	if (elapsedQpc < 0) elapsedQpc = 0;
+	maxQpc = (LONGLONG)DeviceContext->QpcFrequency * INTERP_MAX_EXTRAP_MS / 1000;
+	if (elapsedQpc > maxQpc) elapsedQpc = maxQpc;
+	extrapSec = (double)elapsedQpc / (double)DeviceContext->QpcFrequency;
+
+	for (i = 0; i < INTERP_MAX_FINGERS; i++) {
+		PINTERP_FINGER finger = &DeviceContext->InterpFingers[i];
+		PPTP_CONTACT c;
+		double px, py;
+		LONG xi, yi;
+
+		if (!finger->Active) continue;
+
+		if (finger->TipSwitch) {
+			px = finger->X + finger->Vx * extrapSec;
+			py = finger->Y + finger->Vy * extrapSec;
+		} else {
+			px = finger->X;
+			py = finger->Y;
+		}
+
+		xi = (LONG)px;
+		yi = (LONG)py;
+		if (xi < 0) xi = 0;
+		else if (xi > 0xFFFF) xi = 0xFFFF;
+		if (yi < 0) yi = 0;
+		else if (yi > 0xFFFF) yi = 0xFFFF;
+
+		c = &Report->Contacts[count];
+		c->ContactID = i;
+		c->X = (USHORT)xi;
+		c->Y = (USHORT)yi;
+		c->TipSwitch = finger->TipSwitch;
+		c->Confidence = finger->Confidence;
+		count++;
+		if (count >= PTP_MAX_CONTACT_POINTS) break;
+	}
+
+	Report->ContactCount = (UCHAR)count;
+}
+
+static VOID
+AmtPtpSetScanTime(
+	_In_ PDEVICE_CONTEXT DeviceContext,
+	_In_ PPTP_REPORT Report,
+	_In_ LONGLONG NowQpc
+)
+{
+	LONGLONG delta;
+
+	if (DeviceContext->QpcFrequency <= 0) {
+		Report->ScanTime = 0;
+		return;
+	}
+
+	delta = (NowQpc - DeviceContext->LastEmitTime.QuadPart) * 10000 / DeviceContext->QpcFrequency;
+	if (delta < 0) delta = 0;
+	if (delta > 0xFFFF) delta = 0xFFFF;
+	Report->ScanTime = (USHORT)delta;
+}
+
+static NTSTATUS
+AmtPtpEmitReport(
+	_In_ PDEVICE_CONTEXT DeviceContext,
+	_In_ PPTP_REPORT Report,
+	_In_ LONGLONG NowQpc
+)
+{
+	WDFREQUEST Request;
+	WDFMEMORY RequestMemory;
+	NTSTATUS Status;
+
+	Status = WdfIoQueueRetrieveNextRequest(DeviceContext->InputQueue, &Request);
+	if (!NT_SUCCESS(Status)) {
+		return Status;
+	}
+
+	Status = WdfRequestRetrieveOutputMemory(Request, &RequestMemory);
+	if (!NT_SUCCESS(Status)) {
+		return Status;
+	}
+
+	Status = WdfMemoryCopyFromBuffer(RequestMemory, 0, (PVOID)Report, sizeof(PTP_REPORT));
+	if (!NT_SUCCESS(Status)) {
+		return Status;
+	}
+
+	WdfRequestSetInformation(Request, sizeof(PTP_REPORT));
+	WdfRequestComplete(Request, Status);
+
+	DeviceContext->LastEmitTime.QuadPart = NowQpc;
+	return Status;
+}
+
+VOID
+AmtPtpInterpolationTimerCallback(
+	_In_ WDFTIMER Timer
+)
+{
+	WDFDEVICE device = (WDFDEVICE)WdfTimerGetParentObject(Timer);
+	PDEVICE_CONTEXT ctx = DeviceGetContext(device);
+	PTP_REPORT report;
+	LARGE_INTEGER now;
+	LONGLONG sinceEmitMs;
+
+	if (ctx == NULL || !ctx->InterpHasSample) {
+		return;
+	}
+
+	QueryPerformanceCounter(&now);
+
+	// Emit at most once per timer period (125 Hz).
+	if (ctx->QpcFrequency > 0) {
+		sinceEmitMs = (now.QuadPart - ctx->LastEmitTime.QuadPart) * 1000 / ctx->QpcFrequency;
+		if (sinceEmitMs < (LONGLONG)(INTERP_PERIOD_MS - 1)) {
+			return;
+		}
+	}
+
+	AmtPtpInterpBuildReport(ctx, now.QuadPart, &report);
+	AmtPtpSetScanTime(ctx, &report, now.QuadPart);
+	AmtPtpEmitReport(ctx, &report, now.QuadPart);
 }
 
 // Helper function for numberic operation

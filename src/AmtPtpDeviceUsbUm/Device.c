@@ -34,6 +34,8 @@ AmtPtpCreateDevice(
 	PDEVICE_CONTEXT						deviceContext;
 	WDFDEVICE							device;
 	NTSTATUS							status;
+	WDF_TIMER_CONFIG					timerConfig;
+	WDF_OBJECT_ATTRIBUTES				timerAttributes;
 
 	UNREFERENCED_PARAMETER(Driver);
 	PAGED_CODE();
@@ -106,6 +108,32 @@ AmtPtpCreateDevice(
 		// Initialize the I/O Package and any Queues
 		//
 		status = AmtPtpDeviceQueueInitialize(device);
+	}
+
+	//
+	// Create the periodic resampling timer (125 Hz). It linearly extrapolates
+	// between the ~66 Hz physical samples; no filtering.
+	//
+	if (NT_SUCCESS(status)) {
+		WDF_TIMER_CONFIG_INIT_PERIODIC(
+			&timerConfig,
+			AmtPtpInterpolationTimerCallback,
+			INTERP_PERIOD_MS
+		);
+
+		WDF_OBJECT_ATTRIBUTES_INIT(&timerAttributes);
+		timerAttributes.ParentObject = device;
+
+		status = WdfTimerCreate(
+			&timerConfig,
+			&timerAttributes,
+			&deviceContext->InterpolationTimer
+		);
+
+		if (!NT_SUCCESS(status)) {
+			TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER,
+				"%!FUNC! WdfTimerCreate failed with Status code %!STATUS!", status);
+		}
 	}
 
 	TraceEvents(
@@ -547,6 +575,9 @@ AmtPtpEvtDeviceD0Entry(
 	QueryPerformanceCounter(
 		&pDeviceContext->PerfCounter
 	);
+	pDeviceContext->LastSampleTime = pDeviceContext->PerfCounter;
+	pDeviceContext->LastEmitTime = pDeviceContext->PerfCounter;
+	pDeviceContext->InterpHasSample = FALSE;
 
 	//
 	// Since continuous reader is configured for this interrupt-pipe, we must explicitly start
@@ -564,6 +595,14 @@ AmtPtpEvtDeviceD0Entry(
 	}
 
 	isTargetStarted = TRUE;
+
+	//
+	// Start the resampling timer.
+	//
+	WdfTimerStart(
+		pDeviceContext->InterpolationTimer,
+		WDF_REL_TIMEOUT_IN_MS(INTERP_PERIOD_MS)
+	);
 
 End:
 
@@ -609,6 +648,12 @@ AmtPtpEvtDeviceD0Exit(
 	);
 
 	pDeviceContext = DeviceGetContext(Device);
+
+	//
+	// Stop the resampling timer.
+	//
+	WdfTimerStop(pDeviceContext->InterpolationTimer, TRUE);
+	pDeviceContext->InterpHasSample = FALSE;
 
 	// Stop IO Pipe.
 	WdfIoTargetStop(WdfUsbTargetPipeGetIoTarget(
