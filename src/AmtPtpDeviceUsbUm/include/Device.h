@@ -2,20 +2,29 @@
 
 EXTERN_C_START
 
-// Motion interpolation (macOS-style resampling of the ~66Hz physical samples
-// up to a higher cadence so the trackpad feels as smooth as a normal mouse).
-#define INTERP_MAX_FINGERS 5
-#define INTERP_PERIOD_MS 8
+//
+// Interpolation (1-euro filter + 125 Hz resampling) state shared between the
+// USB interrupt handler and the periodic interpolation timer.
+//
+#define INTERP_MAX_FINGERS   16
+#define INTERP_PERIOD_MS     8
+#define INTERP_MIN_CUTOFF    3.0
+#define INTERP_BETA          0.007
+#define INTERP_DCUTOFF       5.0
+#define INTERP_MAX_EXTRAP_MS 15
 
-typedef struct _INTERP_FINGER {
-	ULONG   ContactID;
-	SHORT   X;
-	SHORT   Y;
-	LONGLONG VX;        // velocity, PTP units per second
-	LONGLONG VY;
+typedef struct _INTERP_FINGER
+{
+	BOOLEAN FilterInit;
+	double  Xf;
+	double  Yf;
+	double  Dxf;
+	double  Dyf;
+	double  XPrev;
+	double  YPrev;
 	BOOLEAN Active;
-	BOOLEAN TipSwitch;
-	BOOLEAN Confidence;
+	UCHAR   TipSwitch;
+	UCHAR   Confidence;
 } INTERP_FINGER, *PINTERP_FINGER;
 
 // Device context struct
@@ -42,7 +51,6 @@ typedef struct _DEVICE_CONTEXT
 
 	LARGE_INTEGER				PerfCounter;
 
-	// Motion interpolation state
 	WDFTIMER					InterpolationTimer;
 	LONGLONG					QpcFrequency;
 	LARGE_INTEGER				LastSampleTime;
@@ -81,6 +89,7 @@ AmtPtpCreateDevice(
 EVT_WDF_DEVICE_PREPARE_HARDWARE AmtPtpEvtDevicePrepareHardware;
 EVT_WDF_DEVICE_D0_ENTRY AmtPtpEvtDeviceD0Entry;
 EVT_WDF_DEVICE_D0_EXIT AmtPtpEvtDeviceD0Exit;
+
 EVT_WDF_TIMER AmtPtpInterpolationTimerCallback;
 
 _IRQL_requires_(PASSIVE_LEVEL)

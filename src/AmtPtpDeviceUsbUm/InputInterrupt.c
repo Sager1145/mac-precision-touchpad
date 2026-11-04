@@ -4,7 +4,8 @@
 #include "InputInterrupt.tmh"
 
 //
-// Forward declarations for motion interpolation helpers.
+// Forward declarations for the interpolation helpers used by the Type 5
+// handler below. They are defined later in this file (spliced from interp-new.c).
 //
 static VOID
 AmtPtpSetScanTime(
@@ -25,6 +26,13 @@ AmtPtpInterpOnSample(
 	_In_ PDEVICE_CONTEXT DeviceContext,
 	_In_ PPTP_REPORT Sample,
 	_In_ LARGE_INTEGER Now
+);
+
+static VOID
+AmtPtpInterpBuildReport(
+	_In_ PDEVICE_CONTEXT DeviceContext,
+	_In_ LONGLONG NowQpc,
+	_Out_ PPTP_REPORT Report
 );
 
 _IRQL_requires_(PASSIVE_LEVEL)
@@ -483,9 +491,12 @@ AmtPtpServiceTouchInputInterruptType5(
 			PtpReport.Contacts[i].ContactID = f_type5->ContactIdentifier.Id;
 			PtpReport.Contacts[i].X = (USHORT) x;
 			PtpReport.Contacts[i].Y = (USHORT) y;
-			PtpReport.Contacts[i].TipSwitch = (AmtRawToInteger(f_type5->TouchMajor) << 1) > 0;
-			PtpReport.Contacts[i].Confidence = (AmtRawToInteger(f_type5->TouchMinor) << 1) < 345 &&
-				(AmtRawToInteger(f_type5->TouchMinor) << 1) < 345;
+			// Use the dedicated touch-state bits (high two bits of AbsoluteY[1]):
+			// state == 0x80 means the finger is in contact. The old code used the
+			// touch-major axis as a proxy, which fails to report the lift cleanly
+			// and breaks flick detection / inertial scrolling.
+			PtpReport.Contacts[i].TipSwitch = ((f_type5->AbsoluteY[1] & 0xC0) == 0x80);
+			PtpReport.Contacts[i].Confidence = TRUE;
 		}
 	}
 
@@ -496,11 +507,12 @@ AmtPtpServiceTouchInputInterruptType5(
 		}
 	}
 
-	// Feed the sample into the motion interpolator and emit it immediately
-	// (no added latency). The periodic timer fills the gaps between physical
-	// samples with velocity-extrapolated reports.
+	// Feed the raw sample into the 1-euro filter, then emit the filtered position
+	// immediately (no extra latency). The periodic timer resamples the filtered
+	// position + smoothed velocity between physical samples.
 	QueryPerformanceCounter(&CurrentPerfCounter);
 	AmtPtpInterpOnSample(DeviceContext, &PtpReport, CurrentPerfCounter);
+	AmtPtpInterpBuildReport(DeviceContext, CurrentPerfCounter.QuadPart, &PtpReport);
 	AmtPtpSetScanTime(DeviceContext, &PtpReport, CurrentPerfCounter.QuadPart);
 	AmtPtpEmitReport(DeviceContext, &PtpReport, CurrentPerfCounter.QuadPart);
 
@@ -513,12 +525,182 @@ AmtPtpServiceTouchInputInterruptType5(
 }
 
 //
-// Motion interpolation: the Magic Trackpad reports raw touches at ~66 Hz.
-// macOS makes this feel smooth by interpolating pointer motion to a higher
-// cadence; we do the same here with a periodic timer and per-finger velocity
-// extrapolation (clamped), so the effective report rate approaches a normal
-// 125 Hz mouse without adding latency to the physical samples themselves.
+// Motion smoothing using the "1-euro filter" (Casiez et al., 2012) - an adaptive
+// low-pass filter used by Android's input pipeline and widely deployed for
+// noisy touch/pointer input:
+//   * slow movement  -> low cutoff  -> strong jitter removal
+//   * fast movement  -> high cutoff -> minimal lag
+// We also low-pass the derived velocity, then extrapolate a short, clamped
+// distance using that smoothed velocity. Every emitted position comes from the
+// filter, so there is no "snap back" to raw coordinates between reports.
 //
+
+static double
+AmtPtpInterpAlpha(
+	_In_ double CutoffHz,
+	_In_ double DtSec
+)
+{
+	double tau = 1.0 / (2.0 * 3.14159265358979323846 * CutoffHz);
+	return 1.0 / (1.0 + tau / DtSec);
+}
+
+static VOID
+AmtPtpInterpFilterFinger(
+	_Inout_ PINTERP_FINGER Finger,
+	_In_ double X,
+	_In_ double Y,
+	_In_ double DtSec
+)
+{
+	double dx, dy, speed, cutoff, a;
+
+	if (DtSec <= 0 || !Finger->FilterInit) {
+		Finger->Xf = X;
+		Finger->Yf = Y;
+		Finger->Dxf = 0.0;
+		Finger->Dyf = 0.0;
+		Finger->XPrev = X;
+		Finger->YPrev = Y;
+		Finger->FilterInit = TRUE;
+		return;
+	}
+
+	// Raw derivative (velocity).
+	dx = (X - Finger->XPrev) / DtSec;
+	dy = (Y - Finger->YPrev) / DtSec;
+
+	// Low-pass the derivative to get a stable velocity.
+	a = AmtPtpInterpAlpha(INTERP_DCUTOFF, DtSec);
+	Finger->Dxf = Finger->Dxf + a * (dx - Finger->Dxf);
+	Finger->Dyf = Finger->Dyf + a * (dy - Finger->Dyf);
+
+	// Adaptive cutoff: higher speed -> less smoothing (less lag).
+	speed = (Finger->Dxf < 0 ? -Finger->Dxf : Finger->Dxf) +
+			(Finger->Dyf < 0 ? -Finger->Dyf : Finger->Dyf);
+	cutoff = INTERP_MIN_CUTOFF + INTERP_BETA * speed;
+	a = AmtPtpInterpAlpha(cutoff, DtSec);
+
+	// Low-pass the position.
+	Finger->Xf = Finger->Xf + a * (X - Finger->Xf);
+	Finger->Yf = Finger->Yf + a * (Y - Finger->Yf);
+
+	Finger->XPrev = X;
+	Finger->YPrev = Y;
+}
+
+static VOID
+AmtPtpInterpOnSample(
+	_In_ PDEVICE_CONTEXT DeviceContext,
+	_In_ PPTP_REPORT Sample,
+	_In_ LARGE_INTEGER Now
+)
+{
+	double dtSec;
+	BOOLEAN seen[INTERP_MAX_FINGERS];
+	ULONG i;
+
+	if (DeviceContext->QpcFrequency <= 0) {
+		return;
+	}
+
+	dtSec = (double)(Now.QuadPart - DeviceContext->LastSampleTime.QuadPart) /
+			(double)DeviceContext->QpcFrequency;
+
+	RtlZeroMemory(seen, sizeof(seen));
+
+	for (i = 0; i < Sample->ContactCount; i++) {
+		PPTP_CONTACT c = &Sample->Contacts[i];
+		ULONG id = c->ContactID;
+		PINTERP_FINGER finger;
+
+		if (id >= INTERP_MAX_FINGERS) {
+			continue;
+		}
+		finger = &DeviceContext->InterpFingers[id];
+
+		// New touch (finger was not active in the previous sample): reset filter.
+		if (!finger->Active) {
+			finger->FilterInit = FALSE;
+		}
+
+		AmtPtpInterpFilterFinger(finger, (double)c->X, (double)c->Y, dtSec);
+
+		finger->Active = TRUE;
+		finger->TipSwitch = c->TipSwitch;
+		finger->Confidence = c->Confidence;
+		seen[id] = TRUE;
+	}
+
+	// Deactivate fingers that are no longer reported.
+	for (i = 0; i < INTERP_MAX_FINGERS; i++) {
+		if (!seen[i]) {
+			DeviceContext->InterpFingers[i].Active = FALSE;
+		}
+	}
+
+	DeviceContext->InterpButton = Sample->IsButtonClicked;
+	DeviceContext->LastSampleTime = Now;
+	DeviceContext->InterpHasSample = TRUE;
+}
+
+static VOID
+AmtPtpInterpBuildReport(
+	_In_ PDEVICE_CONTEXT DeviceContext,
+	_In_ LONGLONG NowQpc,
+	_Out_ PPTP_REPORT Report
+)
+{
+	LONGLONG elapsedQpc, maxQpc;
+	double extrapSec;
+	ULONG i;
+	ULONG count = 0;
+
+	RtlZeroMemory(Report, sizeof(PTP_REPORT));
+	Report->ReportID = REPORTID_MULTITOUCH;
+	Report->IsButtonClicked = DeviceContext->InterpButton;
+
+	if (!DeviceContext->IsSurfaceReportOn || !DeviceContext->InterpHasSample ||
+		DeviceContext->QpcFrequency <= 0) {
+		return;
+	}
+
+	elapsedQpc = NowQpc - DeviceContext->LastSampleTime.QuadPart;
+	if (elapsedQpc < 0) elapsedQpc = 0;
+	maxQpc = (LONGLONG)DeviceContext->QpcFrequency * INTERP_MAX_EXTRAP_MS / 1000;
+	if (elapsedQpc > maxQpc) elapsedQpc = maxQpc;
+	extrapSec = (double)elapsedQpc / (double)DeviceContext->QpcFrequency;
+
+	for (i = 0; i < INTERP_MAX_FINGERS; i++) {
+		PINTERP_FINGER finger = &DeviceContext->InterpFingers[i];
+		PPTP_CONTACT c;
+		double px, py;
+		LONG xi, yi;
+
+		if (!finger->Active) continue;
+
+		px = finger->Xf + finger->Dxf * extrapSec;
+		py = finger->Yf + finger->Dyf * extrapSec;
+
+		xi = (LONG)px;
+		yi = (LONG)py;
+		if (xi < 0) xi = 0;
+		else if (xi > 0xFFFF) xi = 0xFFFF;
+		if (yi < 0) yi = 0;
+		else if (yi > 0xFFFF) yi = 0xFFFF;
+
+		c = &Report->Contacts[count];
+		c->ContactID = i;   // index == hardware ContactID (0..15)
+		c->X = (USHORT)xi;
+		c->Y = (USHORT)yi;
+		c->TipSwitch = finger->TipSwitch;
+		c->Confidence = finger->Confidence;
+		count++;
+		if (count >= PTP_MAX_CONTACT_POINTS) break;
+	}
+
+	Report->ContactCount = (UCHAR)count;
+}
 
 static VOID
 AmtPtpSetScanTime(
@@ -571,122 +753,6 @@ AmtPtpEmitReport(
 
 	DeviceContext->LastEmitTime.QuadPart = NowQpc;
 	return Status;
-}
-
-static VOID
-AmtPtpInterpOnSample(
-	_In_ PDEVICE_CONTEXT DeviceContext,
-	_In_ PPTP_REPORT Sample,
-	_In_ LARGE_INTEGER Now
-)
-{
-	LONGLONG dt;
-	LONGLONG newVX[INTERP_MAX_FINGERS];
-	LONGLONG newVY[INTERP_MAX_FINGERS];
-	ULONG i, j;
-
-	dt = Now.QuadPart - DeviceContext->LastSampleTime.QuadPart;
-
-	// Pass 1: compute per-finger velocity against the still-intact previous
-	// positions, matching fingers by ContactID.
-	for (i = 0; i < Sample->ContactCount && i < INTERP_MAX_FINGERS; i++) {
-		PPTP_CONTACT c = &Sample->Contacts[i];
-		newVX[i] = 0;
-		newVY[i] = 0;
-		for (j = 0; j < INTERP_MAX_FINGERS; j++) {
-			PINTERP_FINGER prev = &DeviceContext->InterpFingers[j];
-			if (prev->Active && prev->ContactID == c->ContactID) {
-				if (dt > 0 && DeviceContext->QpcFrequency > 0) {
-					newVX[i] = ((LONGLONG)c->X - prev->X) * DeviceContext->QpcFrequency / dt;
-					newVY[i] = ((LONGLONG)c->Y - prev->Y) * DeviceContext->QpcFrequency / dt;
-				}
-				break;
-			}
-		}
-	}
-
-	// Deactivate everything, then write the new fingers (avoids stale slots).
-	for (j = 0; j < INTERP_MAX_FINGERS; j++) {
-		DeviceContext->InterpFingers[j].Active = FALSE;
-	}
-
-	for (i = 0; i < Sample->ContactCount && i < INTERP_MAX_FINGERS; i++) {
-		PPTP_CONTACT c = &Sample->Contacts[i];
-		PINTERP_FINGER f = &DeviceContext->InterpFingers[i];
-
-		f->ContactID = c->ContactID;
-		f->X = (SHORT)c->X;
-		f->Y = (SHORT)c->Y;
-		f->VX = newVX[i];
-		f->VY = newVY[i];
-		f->Active = TRUE;
-		f->TipSwitch = c->TipSwitch;
-		f->Confidence = c->Confidence;
-	}
-
-	DeviceContext->InterpButton = Sample->IsButtonClicked;
-	DeviceContext->LastSampleTime = Now;
-	DeviceContext->InterpHasSample = TRUE;
-}
-
-static VOID
-AmtPtpInterpBuildReport(
-	_In_ PDEVICE_CONTEXT DeviceContext,
-	_In_ LONGLONG NowQpc,
-	_Out_ PPTP_REPORT Report
-)
-{
-	LONGLONG elapsed, maxElapsed;
-	ULONG i;
-	ULONG count = 0;
-
-	RtlZeroMemory(Report, sizeof(PTP_REPORT));
-	Report->ReportID = REPORTID_MULTITOUCH;
-	Report->IsButtonClicked = DeviceContext->InterpButton;
-
-	if (!DeviceContext->IsSurfaceReportOn || !DeviceContext->InterpHasSample) {
-		return;
-	}
-
-	elapsed = NowQpc - DeviceContext->LastSampleTime.QuadPart;
-	if (elapsed < 0) elapsed = 0;
-
-	// Clamp extrapolation to 30 ms so a finger that lifted or reversed can't
-	// drift too far before the next physical sample corrects it.
-	maxElapsed = DeviceContext->QpcFrequency > 0 ? DeviceContext->QpcFrequency * 30 / 1000 : 0;
-	if (elapsed > maxElapsed) elapsed = maxElapsed;
-
-	for (i = 0; i < INTERP_MAX_FINGERS; i++) {
-		PINTERP_FINGER f = &DeviceContext->InterpFingers[i];
-		PPTP_CONTACT c;
-		LONGLONG dx = 0, dy = 0;
-		LONG xi, yi;
-
-		if (!f->Active) continue;
-
-		if (DeviceContext->QpcFrequency > 0) {
-			dx = f->VX * elapsed / DeviceContext->QpcFrequency;
-			dy = f->VY * elapsed / DeviceContext->QpcFrequency;
-		}
-
-		xi = (LONG)f->X + (LONG)dx;
-		yi = (LONG)f->Y + (LONG)dy;
-		if (xi < 0) xi = 0;
-		if (yi < 0) yi = 0;
-		if (xi > 0xFFFF) xi = 0xFFFF;
-		if (yi > 0xFFFF) yi = 0xFFFF;
-
-		c = &Report->Contacts[count];
-		c->ContactID = f->ContactID;
-		c->X = (USHORT)xi;
-		c->Y = (USHORT)yi;
-		c->TipSwitch = f->TipSwitch;
-		c->Confidence = f->Confidence;
-		count++;
-		if (count >= PTP_MAX_CONTACT_POINTS) break;
-	}
-
-	Report->ContactCount = (UCHAR)count;
 }
 
 VOID
