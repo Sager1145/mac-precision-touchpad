@@ -132,7 +132,6 @@ AmtPtpCreateDevice(
 
 		WDF_OBJECT_ATTRIBUTES_INIT(&timerAttributes);
 		timerAttributes.ParentObject = device;
-		timerAttributes.ExecutionLevel = WdfExecutionLevelPassive;
 
 		status = WdfTimerCreate(
 			&timerConfig,
