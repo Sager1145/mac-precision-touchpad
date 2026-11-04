@@ -108,6 +108,35 @@ AmtPtpCreateDevice(
 		status = AmtPtpDeviceQueueInitialize(device);
 	}
 
+	// Query QPC frequency for motion interpolation timing.
+	{
+		LARGE_INTEGER freq;
+		if (QueryPerformanceFrequency(&freq)) {
+			deviceContext->QpcFrequency = freq.QuadPart;
+		}
+		else {
+			deviceContext->QpcFrequency = 10000000; // 100ns fallback
+		}
+	}
+
+	// Create the periodic motion interpolation timer (fires every INTERP_PERIOD_MS).
+	{
+		WDF_TIMER_CONFIG timerConfig;
+		WDF_OBJECT_ATTRIBUTES timerAttributes;
+
+		WDF_TIMER_CONFIG_INIT_PERIODIC(&timerConfig, AmtPtpInterpolationTimerCallback, INTERP_PERIOD_MS);
+		timerConfig.AutomaticSerialization = TRUE;
+
+		WDF_OBJECT_ATTRIBUTES_INIT(&timerAttributes);
+		timerAttributes.ParentObject = device;
+
+		status = WdfTimerCreate(&timerConfig, &timerAttributes, &deviceContext->InterpolationTimer);
+		if (!NT_SUCCESS(status)) {
+			TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER,
+				"%!FUNC! WdfTimerCreate failed %!STATUS!", status);
+		}
+	}
+
 	TraceEvents(
 		TRACE_LEVEL_INFORMATION, 
 		TRACE_DRIVER, 
@@ -543,6 +572,12 @@ AmtPtpEvtDeviceD0Entry(
 		&pDeviceContext->PerfCounter
 	);
 
+	// (Re)initialize motion interpolation state and start the periodic timer.
+	pDeviceContext->InterpHasSample = FALSE;
+	pDeviceContext->LastEmitTime = pDeviceContext->PerfCounter;
+	pDeviceContext->LastSampleTime = pDeviceContext->PerfCounter;
+	WdfTimerStart(pDeviceContext->InterpolationTimer, WDF_REL_TIMEOUT_IN_MS(INTERP_PERIOD_MS));
+
 	//
 	// Since continuous reader is configured for this interrupt-pipe, we must explicitly start
 	// the I/O target to get the framework to post read requests.
@@ -604,6 +639,9 @@ AmtPtpEvtDeviceD0Exit(
 	);
 
 	pDeviceContext = DeviceGetContext(Device);
+
+	// Stop the motion interpolation timer.
+	WdfTimerStop(pDeviceContext->InterpolationTimer, TRUE);
 
 	// Stop IO Pipe.
 	WdfIoTargetStop(WdfUsbTargetPipeGetIoTarget(

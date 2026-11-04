@@ -2,6 +2,22 @@
 
 EXTERN_C_START
 
+// Motion interpolation (macOS-style resampling of the ~66Hz physical samples
+// up to a higher cadence so the trackpad feels as smooth as a normal mouse).
+#define INTERP_MAX_FINGERS 5
+#define INTERP_PERIOD_MS 8
+
+typedef struct _INTERP_FINGER {
+	ULONG   ContactID;
+	SHORT   X;
+	SHORT   Y;
+	LONGLONG VX;        // velocity, PTP units per second
+	LONGLONG VY;
+	BOOLEAN Active;
+	BOOLEAN TipSwitch;
+	BOOLEAN Confidence;
+} INTERP_FINGER, *PINTERP_FINGER;
+
 // Device context struct
 typedef struct _DEVICE_CONTEXT
 {
@@ -25,6 +41,15 @@ typedef struct _DEVICE_CONTEXT
 	BOOL                        IsButtonReportOn;
 
 	LARGE_INTEGER				PerfCounter;
+
+	// Motion interpolation state
+	WDFTIMER					InterpolationTimer;
+	LONGLONG					QpcFrequency;
+	LARGE_INTEGER				LastSampleTime;
+	LARGE_INTEGER				LastEmitTime;
+	BOOLEAN						InterpHasSample;
+	INTERP_FINGER				InterpFingers[INTERP_MAX_FINGERS];
+	UCHAR						InterpButton;
 
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
@@ -56,6 +81,7 @@ AmtPtpCreateDevice(
 EVT_WDF_DEVICE_PREPARE_HARDWARE AmtPtpEvtDevicePrepareHardware;
 EVT_WDF_DEVICE_D0_ENTRY AmtPtpEvtDeviceD0Entry;
 EVT_WDF_DEVICE_D0_EXIT AmtPtpEvtDeviceD0Exit;
+EVT_WDF_TIMER AmtPtpInterpolationTimerCallback;
 
 _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS
