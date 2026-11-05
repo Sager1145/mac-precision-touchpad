@@ -22,6 +22,15 @@ Read the **[installation and recovery guide](docs/installer.md)** before install
 
 The public signing certificate thumbprint is `94A13BEE28D788FC4A7FA91C568968C7DBADDC69`. No private key is included in downloads.
 
+### Prebuilt driver (no installer)
+
+A compiled driver package is checked into the repository at [`release/x64/`](release/x64),
+and the release also carries a driver-only ZIP. Installation follows the upstream
+[imbushuo/mac-precision-touchpad](https://github.com/imbushuo/mac-precision-touchpad)
+method: prepare test-signing, trust `AmtPtpDeviceTest.cer`, then right-click
+`AmtPtpDevice.inf` → **Install** (or `pnputil /add-driver .\AmtPtpDevice.inf /install`).
+See [`release/x64/INSTALL.txt`](release/x64/INSTALL.txt) for the full steps.
+
 ## What works
 
 | Feature | Magic Trackpad 3 USB-C |

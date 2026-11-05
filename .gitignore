@@ -242,3 +242,7 @@ ModelManifest.xml
 # FAKE - F# Make
 .fake/
 /external
+
+# Keep the checked-in prebuilt release driver package.
+!release/
+!release/**

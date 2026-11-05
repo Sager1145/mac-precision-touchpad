@@ -1,0 +1,45 @@
+﻿{
+    "Version":  "0.2.0-preview.1",
+    "SourceCommit":  "943e34ab1f97eaaf3391f95b64cbaa972de4d457",
+    "Architecture":  "x64",
+    "Signing":  "WDK test-signed",
+    "CertificateThumbprint":  "94A13BEE28D788FC4A7FA91C568968C7DBADDC69",
+    "Files":  [
+                  {
+                      "Name":  "amtptpdevice.cat",
+                      "SHA256":  "EE20F52E155F7C13F505C26DBD763D0E9963432EA56764600955B20FB52B60BD"
+                  },
+                  {
+                      "Name":  "AmtPtpDevice.inf",
+                      "SHA256":  "45B27FAD83FDB1383834D8285536ABD73A10867B07D866C46EE8DD141CB41270"
+                  },
+                  {
+                      "Name":  "AmtPtpDeviceSpiKm.sys",
+                      "SHA256":  "EEDED43E43C332F5D9BD568E14D71BF2198BD162E91BC50874463CD16D292707"
+                  },
+                  {
+                      "Name":  "AmtPtpDeviceTest.cer",
+                      "SHA256":  "77A3D6CB2522A7EC0F9AB7B79B30624102A7D748B4ADFE0CFBB6D43523C06629"
+                  },
+                  {
+                      "Name":  "AmtPtpDeviceUsbKm.sys",
+                      "SHA256":  "909F109504690DA3E24AC787F769C2468FBAB38811421098201CAE3512B500F3"
+                  },
+                  {
+                      "Name":  "AmtPtpDeviceUsbUm.dll",
+                      "SHA256":  "9FA7A8D2CA8B9542ABDAB5ECC501558120281110D0C5CC96F88BEF881FB3CCF5"
+                  },
+                  {
+                      "Name":  "amtptphidfilter.cat",
+                      "SHA256":  "78CFEC70A027FE04105687E86896EA42E7CA1F0CB2F3AC8FBF74E6B6D6012EDB"
+                  },
+                  {
+                      "Name":  "AmtPtpHidFilter.inf",
+                      "SHA256":  "C5BFAD8B0C0CC70BC85256A2C864009E2E94CF299E5BDF4DF709207B05A3AB49"
+                  },
+                  {
+                      "Name":  "AmtPtpHidFilter.sys",
+                      "SHA256":  "12CEB44A70DE73F990120E63F596B5EDB05E9639ADFD93F678E68B0A525F3327"
+                  }
+              ]
+}
