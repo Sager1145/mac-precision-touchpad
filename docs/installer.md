@@ -1,9 +1,10 @@
-# Install Mac Precision Touchpad v0.2.0-preview.1
+# Install Mac Precision Touchpad v0.2.0-preview.2
 
 This fork supports Magic Trackpad 3 USB-C over USB and Bluetooth on Windows
-10/11 x64. Download the `x64-setup.exe` asset from
-https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.2.0-preview.1
-and the matching SHA256SUMS.txt. The ZIP is a manual-install alternative.
+10/11 x64 and ARM64. Download the `setup.exe` asset from
+https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.2.0-preview.2
+and the matching SHA256SUMS.txt. Setup selects the native architecture.
+Separate `x64-driver.zip` and `arm64-driver.zip` downloads support manual installation.
 
 ## Signing and Windows preparation
 
@@ -67,13 +68,16 @@ uninstaller intentionally does not remove packages it did not install.
 
 ## Manual / unattended installation
 
-The ZIP contains the same signed payload and helpers. From Administrator
-Windows PowerShell in the extracted folder:
+Choose the driver ZIP matching the native Windows architecture listed in
+Settings > System > About. Extract it and follow `INSTALL-DRIVER.txt` to prepare
+test signing and trust the bundled public certificate. In an administrator
+terminal opened in the extracted folder, run:
 
-    .\Manage-Driver.ps1 -Action Install -TrustCertificate
+    pnputil /add-driver .\AmtPtpDevice.inf /install
 
-Omit -TrustCertificate if the certificate is already trusted. This uses the
-same prerequisites, payload validation, backups and ownership record as Setup.
+Save the published `oemNN.inf` name reported by PnPUtil for later removal.
+The driver-only archives contain the INF, catalogs, binaries and public
+certificate. The installer wizard's backup and uninstall entry apply to Setup installs.
 
 For unattended Setup on an already prepared machine, use:
 
@@ -85,17 +89,20 @@ not treat a staged package as proof that disconnected hardware was tested.
 
 ## Build the installer
 
-Run tests/build-release-x64.ps1 first, using Enterprise WDK 10.0.28000.0.
-Install Inno Setup 6.7.3 and then run:
+Build both driver targets with Enterprise WDK 10.0.28000.0. Install Inno Setup
+6.7.3 and run:
 
+    .\tests\build-release-x64.ps1 -Platform x64
+    .\tests\build-release-x64.ps1 -Platform ARM64
     .\installer\Build-Installer.ps1
 
 Compiler and SignTool paths are configurable parameters. The signing
 certificate with its private key must already exist in the build user's
 Personal certificate store. The build verifies every driver signature and
 catalog membership, signs helper scripts, and uses Inno's SignTool integration
-to sign Setup, its temporary copies and the uninstaller. It emits an EXE,
-manual ZIP, SHA256SUMS.txt and a payload manifest with the source commit.
+to sign Setup, its temporary copies and the uninstaller. It emits one EXE,
+two architecture-specific driver ZIPs, SHA256SUMS.txt and payload manifests
+with the source commit.
 
 Installer API references:
 https://jrsoftware.org/ishelp/topic_setup_signtool.htm

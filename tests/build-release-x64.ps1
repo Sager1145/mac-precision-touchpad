@@ -1,4 +1,7 @@
-param([string]$EwdkRoot = 'D:\BuildEnv')
+param(
+    [string]$EwdkRoot = 'D:\BuildEnv',
+    [ValidateSet('x64','ARM64')][string]$Platform = 'x64'
+)
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $setup = Join-Path $EwdkRoot 'SetupBuildEnv.cmd'
@@ -9,10 +12,10 @@ $command = @"
 @echo off
 call "$setup" amd64
 if errorlevel 1 exit /b %errorlevel%
-msbuild "$repoRoot\AmtPtpDriver.sln" /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=10.0.28000.0 /p:SkipPackageVerification=true /nologo /m:1 /v:normal
+msbuild "$repoRoot\AmtPtpDriver.sln" /t:Rebuild /p:Configuration=Release /p:Platform=$Platform /p:WindowsTargetPlatformVersion=10.0.28000.0 /p:SkipPackageVerification=true /nologo /m:1 /v:normal
 exit /b %errorlevel%
 "@
-$commandFile = Join-Path $output 'build-release.cmd'
+$commandFile = Join-Path $output "build-release-$Platform.cmd"
 [IO.File]::WriteAllText($commandFile, $command, [Text.Encoding]::ASCII)
-& cmd.exe /c $commandFile 2>&1 | Tee-Object -FilePath (Join-Path $output 'release-x64.log')
-if ($LASTEXITCODE -ne 0) { throw "Release x64 build failed ($LASTEXITCODE)" }
+& cmd.exe /c $commandFile 2>&1 | Tee-Object -FilePath (Join-Path $output "release-$Platform.log")
+if ($LASTEXITCODE -ne 0) { throw "Release $Platform build failed ($LASTEXITCODE)" }

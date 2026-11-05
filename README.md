@@ -6,9 +6,9 @@ This fork focuses on **Magic Trackpad 3 USB-C over USB and Bluetooth**: smooth c
 
 ## Download and install
 
-**[Download v0.2.0-preview.1](https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.2.0-preview.1)** — Windows 10/11 x64.
+**[Download v0.2.0-preview.2](https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.2.0-preview.2)** for Windows 10/11 x64 and ARM64.
 
-Choose `mac-precision-touchpad-v0.2.0-preview.1-x64-setup.exe`. The installer provides a wizard, previous-driver backups, logs, upgrades and an Installed apps uninstall entry. A manual ZIP and SHA-256 checksums are also available.
+Choose `mac-precision-touchpad-v0.2.0-preview.2-setup.exe`. Setup selects the native x64 or ARM64 package automatically. It provides previous-driver backups, logs, upgrades and an Installed apps uninstall entry. SHA-256 checksums are available for every download.
 
 **This is a test-signed preview, not a Microsoft/WHQL production-signed driver.** Windows must already allow test-signed drivers. The installer checks this and stops if preparation is needed. It does not change boot configuration, Secure Boot, BitLocker or Memory Integrity. Certificate trust is an explicit optional task.
 
@@ -24,12 +24,12 @@ The public signing certificate thumbprint is `94A13BEE28D788FC4A7FA91C568968C7DB
 
 ### Prebuilt driver (no installer)
 
-A compiled driver package is checked into the repository at [`release/x64/`](release/x64),
-and the release also carries a driver-only ZIP. Installation follows the upstream
-[imbushuo/mac-precision-touchpad](https://github.com/imbushuo/mac-precision-touchpad)
-method: prepare test-signing, trust `AmtPtpDeviceTest.cer`, then right-click
-`AmtPtpDevice.inf` → **Install** (or `pnputil /add-driver .\AmtPtpDevice.inf /install`).
-See [`release/x64/INSTALL.txt`](release/x64/INSTALL.txt) for the full steps.
+Download the `x64-driver.zip` or `arm64-driver.zip` asset for your system. Each
+contains the compiled drivers, catalogs, INFs, public certificate and manual
+instructions. After preparing test signing and trusting the certificate, run
+`pnputil /add-driver .\AmtPtpDevice.inf /install` from an administrator terminal
+in the extracted directory. The repository also retains a prebuilt
+[x64 package](release/x64).
 
 ## What works
 
@@ -47,11 +47,11 @@ Both transports use 125 Hz output, a 12 ms interpolation delay and measured-posi
 
 Bluetooth uses device timestamps to preserve buffered packet spacing and retries transient transport errors without restarting the gesture. USB uses a high-resolution native waitable timer. Radio latency and Windows scheduling can still differ.
 
-See [USB/Bluetooth parity](docs/transport-parity.md), [Bluetooth implementation and testing](docs/bluetooth-trackpad-3.md), and the [release notes](docs/releases/v0.2.0-preview.1.md).
+See [USB/Bluetooth parity](docs/transport-parity.md), [Bluetooth implementation and testing](docs/bluetooth-trackpad-3.md), and the [release notes](docs/release-v0.2.0-preview.2.md).
 
 ## Device support
 
-The package retains upstream USB, SPI, Bluetooth and T2 MacBook device support. Magic Trackpad 2 shares the Type 5 protocol. This release's hardware testing was on **Magic Trackpad 3 USB-C (product 0324)**; other models are not newly certified or independently tested by this fork. Windows ARM64 binaries and Magic Trackpad 1 Bluetooth are not included in this release.
+The package retains upstream USB, SPI, Bluetooth and T2 MacBook device support. Magic Trackpad 2 shares the Type 5 protocol. Hardware testing covered **Magic Trackpad 3 USB-C (product 0324) on x64 Windows**. ARM64 packages passed build, architecture, signature and catalog checks. Live ARM64 input testing remains outstanding.
 
 Legacy device lists and project history are preserved in the [upstream README snapshot](docs/upstream-readme.md). See the [upstream PR review](docs/upstream-pr-review.md) for selected fixes and changes deferred pending compatible hardware.
 
@@ -76,10 +76,11 @@ Use Windows x64, Enterprise WDK 10.0.28000.0 and GCC for the standalone regressi
 .\tests\transport-parity\run.ps1
 .\tests\installer\run.ps1
 .\tests\build-release-x64.ps1
+.\tests\build-release-x64.ps1 -Platform ARM64
 .\installer\Build-Installer.ps1
 ```
 
-The installer build needs Inno Setup 6.7.3, Windows SignTool and the local signing certificate/private key. It verifies driver signatures and catalog membership, signs helpers and Setup/uninstall, and generates a manual ZIP, manifest and checksums. See [installer build details](docs/installer.md#build-the-installer).
+The installer build needs Inno Setup 6.7.3, Windows SignTool and the local signing certificate/private key. It verifies each driver's PE architecture, signatures and catalog membership, signs Setup and its helpers, and generates separate driver-only ZIPs, manifests and checksums. See [installer build details](docs/installer.md#build-the-installer).
 
 The build retains `SkipPackageVerification=true` for legacy INF compatibility; successful builds and test signatures do not imply current InfVerif or WHQL certification.
 

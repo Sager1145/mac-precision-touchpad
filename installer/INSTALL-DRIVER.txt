@@ -1,0 +1,35 @@
+Mac Precision Touchpad - manual driver installation
+
+Choose the ZIP for the native architecture shown under Settings > System > About.
+Use x64 for 64-bit Intel/AMD Windows and arm64 for Windows on Arm.
+Keep the INF, CAT and driver files together after extracting the ZIP.
+
+This package uses the WDK test certificate. Prepare Windows for test signing
+and reboot using the installation guide:
+https://github.com/Sager1145/mac-precision-touchpad/blob/master/docs/installer.md
+
+Compare the download with SHA256SUMS.txt. In an administrator terminal opened
+in the extracted folder, check and trust the bundled public certificate:
+
+    certutil -dump .\AmtPtpDeviceTest.cer
+    certutil -addstore Root .\AmtPtpDeviceTest.cer
+    certutil -addstore TrustedPublisher .\AmtPtpDeviceTest.cer
+
+Expected certificate thumbprint: 94A13BEE28D788FC4A7FA91C568968C7DBADDC69
+
+Install the combined USB and Bluetooth package:
+
+    pnputil /add-driver .\AmtPtpDevice.inf /install
+
+Record the published oemNN.inf name reported by PnPUtil. Plug in the trackpad
+or pair it using Windows Bluetooth settings. Check Device Manager for a
+healthy Precision Touchpad. Reboot if Windows requests it.
+
+To remove this package, use the exact published INF name recorded above:
+
+    pnputil /delete-driver oemNN.inf /uninstall
+
+Uninstalling may briefly disconnect the trackpad. Keep another input device
+available. Back up existing packages with pnputil /export-driver before
+replacing them. The standalone AmtPtpHidFilter.inf is only for Bluetooth;
+the combined INF already includes Bluetooth and USB.

@@ -4,6 +4,11 @@ $script:CertificateThumbprint = '94A13BEE28D788FC4A7FA91C568968C7DBADDC69'
 
 function Assert-Payload([string]$Payload) {
     $manifest = Get-Content -LiteralPath (Join-Path $Payload 'manifest.json') -Raw | ConvertFrom-Json
+    $native = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    $expected = switch ($native) { 'AMD64' { 'x64' }; 'ARM64' { 'arm64' }; default { throw "Unsupported Windows architecture: $native" } }
+    if ($manifest.Architecture -ne $expected) {
+        throw "This package targets $($manifest.Architecture), but Windows requires $expected."
+    }
     foreach ($file in $manifest.Files) {
         if ($file.Name -notmatch '^[a-zA-Z0-9_.-]+$') { throw 'Invalid payload filename.' }
         $path = Join-Path $Payload $file.Name
@@ -103,7 +108,8 @@ function Install-Touchpad([string]$Payload, [string]$StateDirectory, [bool]$Trus
     [pscustomobject]@{Version=$manifest.Version; Packages=$owned; Backup=$backup; RebootRequired=($code -eq 3010)} |
         ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $statePath -Encoding UTF8
     Write-Host "Driver staged/installed. Reconnect an unplugged trackpad to bind the update. Previous drivers: $backup"
-    return $code
+    if ($code -eq 3010) { return 3010 }
+    return 0
 }
 
 function Uninstall-Touchpad([string]$StateDirectory) {

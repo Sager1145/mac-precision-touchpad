@@ -17,13 +17,20 @@ $required = @('AmtPtpDevice.inf','amtptpdevice.cat','AmtPtpDeviceUsbUm.dll',
 foreach ($file in $required) { Set-Content -LiteralPath (Join-Path $payload $file) $file }
 Copy-Item -LiteralPath (Join-Path $root 'build\AmtPtpDeviceUniversalPkg\x64\Release\AmtPtpDeviceUniversalPkg.cer') `
     -Destination (Join-Path $payload 'AmtPtpDeviceTest.cer')
-$manifest = [pscustomobject]@{Version='test'; Files=@(Get-ChildItem -LiteralPath $payload -File | ForEach-Object {
+$native = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+$architecture = if ($native -eq 'ARM64') { 'arm64' } else { 'x64' }
+$manifest = [pscustomobject]@{Version='test'; Architecture=$architecture; Files=@(Get-ChildItem -LiteralPath $payload -File | ForEach-Object {
     [pscustomobject]@{Name=$_.Name; SHA256=(Get-FileHash -LiteralPath $_.FullName).Hash}
 })}
 $manifestPath = Join-Path $payload 'manifest.json'
 function Save-Manifest { $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath }
 Save-Manifest
 Assert ((Assert-Payload $payload).Version -eq 'test') 'Valid payload rejected'
+$manifest.Architecture = if ($architecture -eq 'arm64') { 'x64' } else { 'arm64' }
+Save-Manifest
+Rejects { Assert-Payload $payload } 'Wrong architecture accepted'
+$manifest.Architecture = $architecture
+Save-Manifest
 Add-Content -LiteralPath (Join-Path $payload 'AmtPtpHidFilter.sys') 'tampered'
 Rejects { Assert-Payload $payload } 'Tampered driver accepted'
 Set-Content -LiteralPath (Join-Path $payload 'AmtPtpHidFilter.sys') 'AmtPtpHidFilter.sys'
@@ -43,13 +50,14 @@ $originalWindows = $env:WINDIR
 $env:WINDIR = $fakeWindows
 $script:calls = New-Object 'Collections.Generic.List[string]'
 $script:failPnp = $false
+$script:addDriverCode = 0
 $script:imports = 0
 function Assert-TestSigning { }
 function Test-Path {
-    param([Parameter(Position=0)][string]$Path,[string]$LiteralPath)
+    param([Parameter(Position=0)][string]$Path,[string]$LiteralPath,[string]$PathType)
     $target = if ($LiteralPath) { $LiteralPath } else { $Path }
     if ($target -like 'Cert:*') { return $false }
-    Microsoft.PowerShell.Management\Test-Path -LiteralPath $target
+    Microsoft.PowerShell.Management\Test-Path @PSBoundParameters
 }
 function Import-Certificate { $script:imports++ }
 function Get-AuthenticodeSignature {
@@ -59,6 +67,7 @@ function Get-WindowsDriver { @([pscustomobject]@{OriginalFileName='C:\old\amtptp
 function Invoke-PnpUtil([string[]]$Arguments) {
     $script:calls.Add(($Arguments -join ' '))
     if ($script:failPnp) { throw 'Injected PnP failure' }
+    if ($Arguments[0] -eq '/add-driver') { return $script:addDriverCode }
     return 0
 }
 try {
@@ -72,6 +81,9 @@ try {
     $record = Join-Path $state 'installed.json'
     $owned = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
     Assert ($owned.Packages[0].Name -eq 'oem42.inf') 'Incorrect package ownership'
+    $script:addDriverCode = 259
+    Assert ((Install-Touchpad $payload $state $true) -eq 0) 'An already-staged matching package should report success'
+    $script:addDriverCode = 0
     $script:calls.Clear()
     Add-Content -LiteralPath (Join-Path $fakeWindows 'INF\oem42.inf') 'another owner'
     Rejects { Uninstall-Touchpad $state } 'Changed ownership was removed'

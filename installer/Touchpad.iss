@@ -2,7 +2,7 @@
   #error PackageRoot must point to the prepared release directory
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.2.0-preview.1"
+  #define AppVersion "0.2.0-preview.2"
 #endif
 [Setup]
 AppId={{B9DA7434-8AF2-4F63-84D8-179566B48BD5}
@@ -18,14 +18,14 @@ DefaultGroupName=Mac Precision Touchpad
 DisableProgramGroupPage=yes
 DisableWelcomePage=no
 WizardStyle=modern
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed=x64os or arm64
+ArchitecturesInstallIn64BitMode=x64os or arm64
 MinVersion=10.0.17134
 PrivilegesRequired=admin
-LicenseFile={#PackageRoot}\LICENSE-GPL.md
+LicenseFile={#PackageRoot}\common\LICENSE-GPL.md
 InfoBeforeFile=notice.txt
 OutputDir={#OutputRoot}
-OutputBaseFilename=mac-precision-touchpad-v{#AppVersion}-x64-setup
+OutputBaseFilename=mac-precision-touchpad-v{#AppVersion}-setup
 Compression=lzma2
 SolidCompression=yes
 SetupLogging=yes
@@ -40,8 +40,12 @@ SignedUninstaller=yes
 Name: trustcert; Description: "Trust the bundled public WDK test certificate for driver installation"; Flags: unchecked
 
 [Files]
-Source: "{#PackageRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#PackageRoot}\*"; DestDir: "{tmp}"; Flags: dontcopy recursesubdirs createallsubdirs
+Source: "{#PackageRoot}\common\*"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageRoot}\common\*.ps1"; DestDir: "{tmp}"; Flags: dontcopy
+Source: "{#PackageRoot}\x64\*"; DestDir: "{app}\driver"; Flags: ignoreversion; Check: IsX64OS
+Source: "{#PackageRoot}\arm64\*"; DestDir: "{app}\driver"; Flags: ignoreversion; Check: IsArm64
+Source: "{#PackageRoot}\x64\*"; DestDir: "{tmp}\x64"; Flags: dontcopy
+Source: "{#PackageRoot}\arm64\*"; DestDir: "{tmp}\arm64"; Flags: dontcopy
 
 [Icons]
 Name: "{group}\Touchpad settings"; Filename: "ms-settings:devices-touchpad"
@@ -76,10 +80,14 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code: Integer;
+  Architecture: String;
 begin
-  ExtractTemporaryFiles('{tmp}\*');
+  if IsArm64 then Architecture := 'arm64' else Architecture := 'x64';
+  Log('Selected native driver architecture: ' + Architecture);
+  ExtractTemporaryFiles('{tmp}\*.ps1');
+  ExtractTemporaryFiles('{tmp}\' + Architecture + '\*');
   if not RunDriverTool('Validate', ExpandConstant('{tmp}\Manage-Driver.ps1'),
-      ExpandConstant('{tmp}\driver'), False, Code) then
+      ExpandConstant('{tmp}\' + Architecture), False, Code) then
     Result := 'Unable to start Windows PowerShell.'
   else if Code <> 0 then Result := FailureMessage
   else Result := '';
