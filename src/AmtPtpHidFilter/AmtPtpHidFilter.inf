@@ -107,7 +107,7 @@ KmdfLibraryVersion = $KMDFVERSION$
 
 [Strings]
 SPSVCINST_ASSOCSERVICE= 0x00000002
-ManufacturerName = "Bingxing Wang"
+ManufacturerName = "Bingxing Wang, Sager1145"
 DiskName = "Precision Touchpad for Apple Trackpad Installation Disk"
 AmtPtpHidRootDevice.DeviceDesc = "Apple Multi-touch Trackpad HID Device"
 AmtPtpHidFilter.DeviceDesc = "Apple Multi-touch Trackpad HID Filter"
