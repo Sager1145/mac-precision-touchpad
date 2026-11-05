@@ -1,41 +1,35 @@
-Mac Precision Touchpad — prebuilt x64 driver (v0.2.0-preview.1)
+Mac Precision Touchpad - manual driver installation
 
-This folder is the compiled driver package, checked in so it can be installed
-without building. Installation follows the upstream imbushuo/mac-precision-
-touchpad method: right-click the INF and install. Upstream's unsigned CI
-builds (after 2021/01/06) used the same method and additionally required
-test-signing mode; the note below applies to this fork's test-signed build.
+Choose the ZIP for the native architecture shown under Settings > System > About.
+Use x64 for 64-bit Intel/AMD Windows and arm64 for Windows on Arm.
+Keep the INF, CAT and driver files together after extracting the ZIP.
 
-Files
-  AmtPtpDevice.inf        primary driver package INF (right-click to install)
-  amtptpdevice.cat        signed catalog for the USB/SPI/Bluetooth package
-  AmtPtpDeviceUsbUm.dll   user-mode USB driver (UMDF)
-  AmtPtpHidFilter.sys     HID filter driver (KMDF, Bluetooth filter)
-  AmtPtpDeviceUsbKm.sys   kernel-mode USB driver (KMDF)
-  AmtPtpDeviceSpiKm.sys   kernel-mode SPI driver (KMDF)
-  AmtPtpHidFilter.inf     standalone Bluetooth filter INF
-  amtptphidfilter.cat     signed catalog for the Bluetooth filter
-  AmtPtpDeviceTest.cer    public WDK test certificate (no private key)
-  manifest.json           per-file SHA-256 hashes and source commit
+This package uses the WDK test certificate. Prepare Windows for test signing
+and reboot using the installation guide:
+https://github.com/Sager1145/mac-precision-touchpad/blob/master/docs/installer.md
 
-This build is TEST-SIGNED (WDK test certificate), not Microsoft/WHQL
-production-signed. Windows x64 requires preparation first:
+Compare the download with SHA256SUMS.txt. In an administrator terminal opened
+in the extracted folder, check and trust the bundled public certificate:
 
-  1. Disable Secure Boot in UEFI/BIOS firmware settings.
-  2. Enable test-signing mode (Administrator Command Prompt):
-        bcdedit /set testsigning on
-  3. Reboot. A "Test Mode" watermark appears in the bottom-right corner.
-  4. Trust the test certificate (Administrator PowerShell):
-        certutil -addstore Root .\AmtPtpDeviceTest.cer
-        certutil -addstore TrustedPublisher .\AmtPtpDeviceTest.cer
-  5. Right-click AmtPtpDevice.inf and select "Install",
-     or (Administrator PowerShell):
-        pnputil /add-driver .\AmtPtpDevice.inf /install
-  6. Connect the trackpad over USB-C, or pair it in Bluetooth settings.
-     Unplug USB when testing Bluetooth.
+    certutil -dump .\AmtPtpDeviceTest.cer
+    certutil -addstore Root .\AmtPtpDeviceTest.cer
+    certutil -addstore TrustedPublisher .\AmtPtpDeviceTest.cer
 
-Certificate thumbprint: 94A13BEE28D788FC4A7FA91C568968C7DBADDC69
+Expected certificate thumbprint: 94A13BEE28D788FC4A7FA91C568968C7DBADDC69
 
-Do not modify the INF or binaries: changing a signed file invalidates its
-catalog membership. See docs/test-signed-installation.md for full details and
-recovery, and docs/installer.md for the wizard-based installer.
+Install the combined USB and Bluetooth package:
+
+    pnputil /add-driver .\AmtPtpDevice.inf /install
+
+Record the published oemNN.inf name reported by PnPUtil. Plug in the trackpad
+or pair it using Windows Bluetooth settings. Check Device Manager for a
+healthy Precision Touchpad. Reboot if Windows requests it.
+
+To remove this package, use the exact published INF name recorded above:
+
+    pnputil /delete-driver oemNN.inf /uninstall
+
+Uninstalling may briefly disconnect the trackpad. Keep another input device
+available. Back up existing packages with pnputil /export-driver before
+replacing them. The standalone AmtPtpHidFilter.inf is only for Bluetooth;
+the combined INF already includes Bluetooth and USB.
