@@ -8,7 +8,7 @@ Class = HIDClass
 ClassGuid = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
 Provider = %ManufacturerName%
 CatalogFile = AmtPtpDevice.cat
-DriverVer = 11/05/2026,3.7.23.965
+DriverVer = 11/05/2026,3.28.9.206
 PnpLockdown = 1
 
 [DestinationDirs]

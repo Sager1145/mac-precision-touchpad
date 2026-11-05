@@ -8,7 +8,7 @@ Class = HIDClass
 ClassGuid = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
 Provider=%ManufacturerName%
 CatalogFile=AmtPtpHidFilter.cat
-DriverVer = 11/05/2026,3.7.20.331
+DriverVer = 11/05/2026,3.28.5.889
 PnpLockdown=1
 
 [DestinationDirs]
@@ -32,36 +32,21 @@ AmtPtpHidFilter.sys  = 1,,
 %ManufacturerName%=Standard,NTamd64.10.0...16299
 
 [Standard.NTamd64.10.0...16299]
-; Driver migration: if this user installed the old Precision Touch Driver, install the generic HID USB driver for them
-%AmtPtpHidRootDevice.DeviceDesc%=StandardUsbHid_Device, USB\Vid_05ac&Pid_0265&MI_01
-
-; The fact is, you can't filter HIDUSB or friends directly, because they load the export driver called
-; HIDCLASS which overrides their IO Major Function pointers. Therefore we still implement our own HID miniport 
-; transport, but in fact reusing the underlying HID transport (either Bluetooth or USB).
-; Some high-level patches involved to modify the underlying driver IO handlers.
-%AmtPtpHidFilter.DeviceDesc%=AmtPtpHidFilter_MiniPortDevice, HID\VID_05AC&PID_0265&REV_0855&MI_01&Col01
+; Bluetooth only. USB trackpads are handled by AmtPtpDevice.inf, so this
+; package must not rebind them.
+;
+; The fact is, you can't filter HIDBTH or friends directly, because they load the export driver called
+; HIDCLASS which overrides their IO Major Function pointers. Therefore we still implement our own HID miniport
+; transport, but in fact reusing the underlying Bluetooth HID transport. The filter sends its own requests
+; to the transport's saved handler through a private device; the shared driver object is not modified.
 %AmtPtpHidFilter.DeviceDesc%=AmtPtpHidFilter_MiniPortDevice, HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0265&Col01
 %AmtPtpHidFilter.DeviceDesc%=AmtPtpHidFilter_MiniPortDevice, HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0324&Col01
 ; To avoid confusions to OS, disable any other collections.
-%AmtPtpHidFilter.NullDeviceDesc%=AmtPtpHidFilter_NullDevice, HID\VID_05AC&PID_0265&REV_0855&MI_01&Col02
-%AmtPtpHidFilter.NullDeviceDesc%=AmtPtpHidFilter_NullDevice, HID\VID_05AC&PID_0265&REV_0855&MI_01&Col03
 %AmtPtpHidFilter.NullDeviceDesc%=AmtPtpHidFilter_NullDevice, HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0265&Col02
 %AmtPtpHidFilter.NullDeviceDesc%=AmtPtpHidFilter_NullDevice, HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0324&Col02
 
 [FilterDriver_Payload]
 AmtPtpHidFilter.sys
-
-[StandardUsbHid_Device.NT]
-Include = input.inf
-Needs = HID_Inst.NT
-
-[StandardUsbHid_Device.NT.HW]
-Include = input.inf
-Needs = HID_Inst.NT.HW
-
-[StandardUsbHid_Device.NT.Services]
-Include = input.inf
-Needs = HID_Inst.NT.Services
 
 [AmtPtpHidFilter_MiniPortDevice.NT]
 CopyFiles=FilterDriver_Payload
@@ -109,7 +94,6 @@ KmdfLibraryVersion = 1.15
 SPSVCINST_ASSOCSERVICE= 0x00000002
 ManufacturerName = "Bingxing Wang, Sager1145"
 DiskName = "Precision Touchpad for Apple Trackpad Installation Disk"
-AmtPtpHidRootDevice.DeviceDesc = "Apple Multi-touch Trackpad HID Device"
 AmtPtpHidFilter.DeviceDesc = "Apple Multi-touch Trackpad HID Filter"
 AmtPtpHidFilter.NullDeviceDesc = "Apple Multi-touch Auxiliary Services"
 AmtPtpHidFilter.SVCDESC = "Apple Multi-touch Trackpad HID Filter Service"
