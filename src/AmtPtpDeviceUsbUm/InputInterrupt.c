@@ -474,6 +474,7 @@ AmtPtpServiceTouchInputInterruptType5(
 	QueryPerformanceCounter(&CurrentPerfCounter);
 	BOOLEAN transition = AmtPtpInterpOnSample(DeviceContext, &PtpReport, CurrentPerfCounter);
 	TraceLoggingWrite(g_hAmtPtpDeviceTraceProvider, "PhysicalInput",
+		TraceLoggingLevel(PTP_TRACE_LEVEL_VERBOSE), TraceLoggingKeyword(PTP_TRACE_KEYWORD_INPUT),
 		TraceLoggingInt64(CurrentPerfCounter.QuadPart, "Qpc"),
 		TraceLoggingBinary(Buffer, (ULONG)NumBytesTransferred, "Packet"));
 	// Only contact/button transitions bypass the timer. Emitting every raw
@@ -789,6 +790,7 @@ AmtPtpEmitReport(
 	WdfRequestSetInformation(Request, sizeof(PTP_REPORT));
 	DeviceContext->LastDeliveredReport = normalized;
 	TraceLoggingWrite(g_hAmtPtpDeviceTraceProvider, "DeliveredInput",
+		TraceLoggingLevel(PTP_TRACE_LEVEL_VERBOSE), TraceLoggingKeyword(PTP_TRACE_KEYWORD_INPUT),
 		TraceLoggingInt64(NowQpc, "Qpc"),
 		TraceLoggingBoolean(DeviceContext->InterpTimerEmission, "Timer"),
 		TraceLoggingBinary(&normalized, sizeof(normalized), "Report"));

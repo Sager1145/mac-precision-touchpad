@@ -174,10 +174,24 @@ PtpFilterDetourWindowsHIDStack(
     // HIDCLASS keeps the transport's original dispatch table here. Read it,
     // never write the driver object.
     hidTransportClassExtension = (PHIDCLASS_DRIVER_EXTENSION)(hidTransportIoClientExtension + 1);
+
+    // This layout is private to HIDCLASS. Before calling a pointer read from
+    // it, check that the structure points back at this driver and that the
+    // handler lies inside its image; otherwise fail start instead of jumping
+    // to an arbitrary address after a Windows update.
+    if (hidTransportClassExtension->MinidriverObject != hidTransportWdmDriverObject) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! HIDCLASS extension layout not recognized, can't continue");
+        status = STATUS_NOT_SUPPORTED;
+        goto cleanup;
+    }
+
     transportDispatch = hidTransportClassExtension->MajorFunction[IRP_MJ_INTERNAL_DEVICE_CONTROL];
-    if (transportDispatch == NULL) {
-        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! Transport internal IOCTL handler is null, can't continue");
-        status = STATUS_UNSUCCESSFUL;
+    if (transportDispatch == NULL ||
+        hidTransportWdmDriverObject->DriverStart == NULL ||
+        (ULONG_PTR)transportDispatch < (ULONG_PTR)hidTransportWdmDriverObject->DriverStart ||
+        (ULONG_PTR)transportDispatch >= (ULONG_PTR)hidTransportWdmDriverObject->DriverStart + hidTransportWdmDriverObject->DriverSize) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! Transport internal IOCTL handler is not inside the transport driver, can't continue");
+        status = STATUS_NOT_SUPPORTED;
         goto cleanup;
     }
 

@@ -157,15 +157,9 @@ AmtPtpCreateDevice(
 	);
 
 	//
-	// Create a device interface so that applications can find and talk
-	// to us.
+	// No private device interface: applications, including the settings app,
+	// reach the trackpad through the HID interface HIDCLASS creates.
 	//
-	status = WdfDeviceCreateDeviceInterface(
-		device,
-		&GUID_DEVINTERFACE_AmtPtpDevice,
-		NULL // ReferenceString
-	);
-
 	if (NT_SUCCESS(status)) {
 		//
 		// Initialize the I/O Package and any Queues

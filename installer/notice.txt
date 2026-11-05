@@ -2,10 +2,10 @@ Magic Trackpad 3 USB-C and Bluetooth - WDK test-signed release
 
 This package uses a local WDK test certificate. Prepare Windows to load test-signed drivers before running Setup. Setup checks the active policy before installing.
 
-Setup does not change boot configuration, Secure Boot, BitLocker or Memory Integrity. Read INSTALL.txt for preparation instructions. Certificate trust is a separate, optional task on the next page. Select it only if you want to trust this bundled public test certificate. No private key is distributed.
+Setup does not change boot configuration, Secure Boot, BitLocker or Memory Integrity. Read INSTALL.txt for preparation instructions. Certificate trust is a separate, optional task on the next page. It adds the bundled test certificate to the machine's trusted root and trusted publisher stores, so Windows will then trust any program, script or driver signed with its key, not only this driver, until the trust is removed. The key stays with the project's developer and is never distributed. Select the task only if you accept that.
 
 Setup installs matching Apple trackpad devices, backs up previous packages and creates an entry in Windows Installed apps. Connect USB-C or pair the trackpad in Windows Bluetooth settings. Unplug USB to test Bluetooth input.
 
 Pointing, dragging, scrolling, flick momentum and reconnects were tested on Magic Trackpad 3 USB-C. Other bundled MacBook drivers retain upstream support but have not been hardware-tested for this release.
 
-Uninstall removes only packages recorded by this installer. It retains driver backups, logs and certificate trust for recovery. It does not remove unrelated driver packages or change Windows boot settings.
+Uninstall removes only packages recorded by this installer, and removes certificate trust only if this installer added it. It retains driver backups and logs for recovery. It does not remove unrelated driver packages or change Windows boot settings.

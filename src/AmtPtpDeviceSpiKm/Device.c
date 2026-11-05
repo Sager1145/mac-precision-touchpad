@@ -134,16 +134,10 @@ AmtPtpDeviceSpiKmCreateDevice(
 		pDeviceContext->DeviceStatus = D3;
 
         //
-        // Create a device interface so that applications can find and talk
-        // to us.
+        // No private device interface: applications reach the trackpad
+        // through the HID interface HIDCLASS creates.
         //
-        Status = WdfDeviceCreateDeviceInterface(
-            Device,
-            &GUID_DEVINTERFACE_AmtPtpDeviceSpiKm,
-            NULL // ReferenceString
-        );
-
-        if (NT_SUCCESS(Status)) 
+        if (NT_SUCCESS(Status))
 		{
             //
             // Initialize the I/O Package and any Queues

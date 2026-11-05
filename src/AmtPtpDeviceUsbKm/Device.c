@@ -107,15 +107,9 @@ Return Value:
 		deviceContext->PtpReportTouch = TRUE;
 
         //
-        // Create a device interface so that applications can find and talk
-        // to us.
+        // No private device interface: applications reach the trackpad
+        // through the HID interface HIDCLASS creates.
         //
-        status = WdfDeviceCreateDeviceInterface(
-            device,
-            &GUID_DEVINTERFACE_AmtPtpDeviceUsbKm,
-            NULL // ReferenceString
-            );
-
         if (NT_SUCCESS(status)) {
             //
             // Initialize the I/O Package and any Queues

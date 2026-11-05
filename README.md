@@ -51,7 +51,7 @@ Bluetooth uses device timestamps to preserve buffered packet spacing and retries
 
 The Bluetooth filter reads raw reports from the Windows Bluetooth HID transport. HIDCLASS hides that transport's own handler, so the filter calls the handler directly for its own requests through a private kernel-only device. Unlike upstream and v0.2.0, it no longer rewrites the shared Bluetooth HID driver's dispatch table, so other Bluetooth keyboards and mice are unaffected. A reboot clears the old patch after upgrading from v0.2.0 or earlier.
 
-See [USB/Bluetooth parity](docs/transport-parity.md), [Bluetooth implementation and testing](docs/bluetooth-trackpad-3.md), and the [v0.2.1 release notes](docs/release-v0.2.1.md).
+See [USB/Bluetooth parity](docs/transport-parity.md), [Bluetooth implementation and testing](docs/bluetooth-trackpad-3.md), the [v0.2.1 release notes](docs/release-v0.2.1.md) and the [unreleased v0.2.2 changes](docs/release-v0.2.2.md).
 
 ## Device support
 
@@ -65,7 +65,8 @@ Legacy device lists and project history are preserved in the [upstream README sn
 - If upgrading while disconnected, reconnect the trackpad to select the new package.
 - Check Device Manager for a healthy Apple trackpad and Precision Touchpad child device.
 - If Setup stops, read its message and logs in `C:\Program Files\Mac Precision Touchpad State`.
-- Uninstall through Windows Installed apps. Only packages recorded by this installer are removed; backups, logs and certificate trust remain for recovery.
+- Uninstall through Windows Installed apps. Only packages recorded by this installer are removed, and certificate trust is removed only if Setup added it. Backups and logs remain for recovery.
+- Trusting the test certificate lets Windows trust anything signed with its key, not only this driver. See [what certificate trust allows](docs/installer.md#what-certificate-trust-allows) and how to remove it.
 - The standalone `AmtPtpHidFilter.inf` in the driver ZIPs is for Bluetooth only. USB trackpads use `AmtPtpDevice.inf`.
 
 Report the Windows build, trackpad model, connection type and reproduction steps in [Issues](https://github.com/Sager1145/mac-precision-touchpad/issues). Avoid posting Bluetooth addresses or other device identifiers unnecessarily.

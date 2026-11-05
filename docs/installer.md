@@ -27,6 +27,26 @@ taken effect. It never changes boot configuration, Secure Boot, BitLocker,
 Memory Integrity or pairing. The certificate trust task is optional and
 unchecked; select it if this public certificate is not already trusted.
 
+### What certificate trust allows
+
+The trust task adds the certificate to the machine's Trusted Root and Trusted
+Publisher stores. Windows then treats anything signed with this key as coming
+from a trusted publisher, not only this driver: programs, installers,
+PowerShell scripts and driver packages. The certificate is self-signed, valid
+until 2036 and cannot be revoked. Its key stays on the developer's build
+machine, so anyone who obtained that key could sign software this machine
+would trust.
+
+If Setup added the trust, uninstall removes it again. Trust that already
+existed before Setup ran is left alone. To remove it yourself from an
+administrator terminal:
+
+    certutil -delstore Root 94A13BEE28D788FC4A7FA91C568968C7DBADDC69
+    certutil -delstore TrustedPublisher 94A13BEE28D788FC4A7FA91C568968C7DBADDC69
+
+Installed drivers keep working after the trust is removed while Windows is in
+test-signing mode. Installing or updating them again needs the trust.
+
 ## Install or upgrade
 
 1. Verify the EXE hash against SHA256SUMS.txt.
@@ -46,6 +66,9 @@ Driver backups, ownership records and logs are in:
 
     C:\Program Files\Mac Precision Touchpad State
 
+Only SYSTEM and Administrators can open this folder, because the logs record
+user and machine names. Each log keeps one previous copy once it passes 1 MB.
+
 If a newer or higher-ranking driver is already selected, Windows may keep it.
 Check Device Manager's Driver tab before assuming the active driver changed.
 The installer propagates failures and asks for a reboot when Windows requests it.
@@ -58,9 +81,10 @@ can briefly disconnect the trackpad. Removal checks the recorded OEM INF name
 and its SHA-256 hash and removes only packages owned by this installer. If
 Windows has since reused a recorded OEM INF name for another package, that
 entry is skipped and logged. If the ownership record is missing, no drivers
-are removed and the application is still uninstalled. Removal does not
-force-delete unrelated packages, remove shared certificate trust, or change
-Windows boot settings.
+are removed and the application is still uninstalled. Drivers are removed
+only after you confirm; if removal fails, the uninstall stops with the app
+still installed. Removal does not force-delete unrelated packages, remove
+certificate trust that Setup did not add, or change Windows boot settings.
 
 Logs and backups are retained. To restore an exported driver from an elevated
 terminal, supply the actual backup directory:

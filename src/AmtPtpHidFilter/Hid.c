@@ -3,6 +3,21 @@
 #include <Driver.h>
 #include "Hid.tmh"
 
+static EVT_WDF_REQUEST_COMPLETION_ROUTINE PtpFilterForwardCompletion;
+
+static VOID
+PtpFilterForwardCompletion(
+	_In_ WDFREQUEST Request,
+	_In_ WDFIOTARGET Target,
+	_In_ PWDF_REQUEST_COMPLETION_PARAMS Params,
+	_In_ WDFCONTEXT Context
+)
+{
+	UNREFERENCED_PARAMETER(Target);
+	UNREFERENCED_PARAMETER(Context);
+	WdfRequestCompleteWithInformation(Request, Params->IoStatus.Status, Params->IoStatus.Information);
+}
+
 static const UCHAR PtpFilterHqaBlob[] = { DEFAULT_PTP_HQA_BLOB };
 C_ASSERT(sizeof(PtpFilterHqaBlob) == sizeof(((PPTP_DEVICE_HQA_CERTIFICATION_REPORT)0)->CertificationBlob));
 
@@ -79,6 +94,7 @@ PtpFilterGetDeviceAttribs(
 		goto exit;
 	}
 
+	RtlZeroMemory(pDeviceAttributes, sizeof(HID_DEVICE_ATTRIBUTES));
 	pDeviceAttributes->Size = sizeof(HID_DEVICE_ATTRIBUTES);
 	// Okay here's one thing: we cannot report the real ID here, otherwise there's will be some great conflict with the USB/BT driver.
 	// Therefore Vendor ID is changed to a hardcoded number
@@ -159,12 +175,21 @@ PtpFilterGetStrings(
 	TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_HID, "%!FUNC! Entry");
 	deviceContext = PtpFilterGetContext(Device);
 
+	// The transport route exists only between start and cleanup.
+	if (deviceContext->HidIoTarget == NULL || deviceContext->Stopping) {
+		*Pending = FALSE;
+		return STATUS_DEVICE_NOT_READY;
+	}
+
 	// Forward the IRP to our upstream IO target
 	// We don't really care about the content
 	WdfRequestFormatRequestUsingCurrentType(Request);
-	WDF_REQUEST_SEND_OPTIONS_INIT(&sendOptions, WDF_REQUEST_SEND_OPTION_SEND_AND_FORGET);
+	WDF_REQUEST_SEND_OPTIONS_INIT(&sendOptions, 0);
 
-	// This IOCTL is METHOD_NEITHER, so we just send it without IRP modification
+	// This IOCTL is METHOD_NEITHER, so we just send it without IRP modification.
+	// A completion routine lets the target track the request, so power-down
+	// can cancel it before the route is torn down.
+	WdfRequestSetCompletionRoutine(Request, PtpFilterForwardCompletion, NULL);
 	requestSent = WdfRequestSend(Request, deviceContext->HidIoTarget, &sendOptions);
 	*Pending = TRUE;
 

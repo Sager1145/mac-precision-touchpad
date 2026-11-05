@@ -40,8 +40,11 @@ UninstallDisplayIcon={sys}\main.cpl
 SignTool=touchpad
 SignedUninstaller=yes
 
+[Messages]
+ConfirmUninstall=Remove %1 and the driver packages this installer added?%n%nThe trackpad may disconnect briefly, so keep another input device available. Backups and logs are retained. Certificate trust is removed only if this installer added it.
+
 [Tasks]
-Name: trustcert; Description: "Trust the bundled public WDK test certificate for driver installation"; Flags: unchecked
+Name: trustcert; Description: "Trust the bundled WDK test certificate. Windows will then trust any software signed with it, not only this driver, until you remove it or uninstall this app"; Flags: unchecked
 
 [Files]
 Source: "{#PackageRoot}\common\*"; DestDir: "{app}"; Flags: ignoreversion
@@ -120,22 +123,18 @@ begin
   Result := RebootRequired;
 end;
 
-function InitializeUninstall: Boolean;
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Code: Integer;
 begin
-  Result := False;
-  if not UninstallSilent then
-    if MsgBox('Remove this installer''s driver packages? The trackpad may disconnect briefly. Keep another input device available. Backups and logs will be retained.',
-        mbConfirmation, MB_YESNO or MB_DEFBUTTON2) <> IDYES then Exit;
-  if not RunDriverTool('Uninstall', ExpandConstant('{app}\Manage-Driver.ps1'), '', False, Code) then begin
-    MsgBox('Unable to start driver removal.', mbError, MB_OK); Exit;
+  // Runs after the user confirms and before any file is removed. Raising here
+  // aborts the uninstall with every file and registration left in place.
+  if CurUninstallStep = usUninstall then begin
+    if not RunDriverTool('Uninstall', ExpandConstant('{app}\Manage-Driver.ps1'), '', False, Code) then
+      RaiseException('Unable to start driver removal.');
+    if (Code <> 0) and (Code <> 3010) then RaiseException(FailureMessage);
+    RebootRequired := Code = 3010;
   end;
-  if (Code <> 0) and (Code <> 3010) then begin
-    MsgBox(FailureMessage, mbError, MB_OK); Exit;
-  end;
-  RebootRequired := Code = 3010;
-  Result := True;
 end;
 
 function UninstallNeedRestart: Boolean;

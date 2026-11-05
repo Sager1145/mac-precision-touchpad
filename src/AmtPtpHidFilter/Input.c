@@ -182,6 +182,7 @@ PtpFilterPrepareDelivery(PDEVICE_CONTEXT Ctx, LONGLONG Now, BOOLEAN Timer)
         Ctx->LastEmitTime = Now;
         WdfRequestSetInformation(request, sizeof(report));
         TraceLoggingWrite(g_PtpBluetoothTrace, "DeliveredInput",
+            TraceLoggingLevel(PTP_TRACE_LEVEL_VERBOSE), TraceLoggingKeyword(PTP_TRACE_KEYWORD_INPUT),
             TraceLoggingBoolean(Timer, "Timer"), TraceLoggingInt64(Now, "Qpc"),
             TraceLoggingBinary(&report, sizeof(report), "Report"));
     }
@@ -272,7 +273,9 @@ PtpFilterInputRequestCompletionCallback(
     length = (size_t)WdfRequestGetInformation(Request);
     buffer = WdfMemoryGetBuffer(rawMemory, &capacity);
     if (length == 0 || length > capacity || buffer == NULL) goto cleanup;
-    TraceLoggingWrite(g_PtpBluetoothTrace, "PhysicalPacket", TraceLoggingBinary(buffer, (ULONG)length, "Packet"));
+    TraceLoggingWrite(g_PtpBluetoothTrace, "PhysicalPacket",
+        TraceLoggingLevel(PTP_TRACE_LEVEL_VERBOSE), TraceLoggingKeyword(PTP_TRACE_KEYWORD_INPUT),
+        TraceLoggingBinary(buffer, (ULONG)length, "Packet"));
     if (buffer[0] != (ctx->VendorID == HID_VID_APPLE_BT ? 0x31 : 0x02)) {
         // If firmware has returned to mouse mode, restore multitouch mode.
         if (ctx->VendorID == HID_VID_APPLE_BT && buffer[0] == 0x02) {

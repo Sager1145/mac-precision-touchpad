@@ -70,7 +70,10 @@ $script:calls = New-Object 'Collections.Generic.List[string]'
 $script:failPnp = $false
 $script:addDriverCode = 0
 $script:imports = 0
+$script:certRemovals = 0
+$script:failAfterStaging = $false
 function Assert-TestSigning { }
+function Remove-TrustedCertificate { $script:certRemovals++ }
 function Test-Path {
     param([Parameter(Position=0)][string]$Path,[string]$LiteralPath,[string]$PathType)
     $target = if ($LiteralPath) { $LiteralPath } else { $Path }
@@ -93,11 +96,35 @@ function Invoke-PnpUtil([string[]]$Arguments) {
         if ($script:addDriverCode -eq 0) {
             Copy-Item -LiteralPath $Arguments[1] -Destination (Join-Path $fakeWindows 'INF\oem42.inf')
         }
+        # pnputil can stage a package and then fail to install it on a device.
+        if ($script:failAfterStaging) { throw 'Injected failure after staging' }
         return $script:addDriverCode
     }
     return 0
 }
 try {
+    # Any user can create the preview-era record. Malformed ones must be ignored.
+    $legacyRecord = Join-Path $env:ProgramData 'Sager1145\MacPrecisionTouchpad\installed.json'
+    $legacyText = Get-Content -LiteralPath $legacyRecord -Raw
+    foreach ($bad in '{}', '{"Packages":[{"Name":"oem7.inf"}]}', '{"Packages":["oem7.inf", null, 5]}', 'not json') {
+        Set-Content -LiteralPath $legacyRecord $bad
+        Assert (@(Get-LegacyOwnedPackages (Get-WindowsDriver)).Count -eq 0) "Malformed preview record was adopted: $bad"
+    }
+    Set-Content -LiteralPath $legacyRecord $legacyText
+
+    # A pnputil failure after staging must still record the staged package.
+    $failState = Join-Path $fixture 'fail-state'
+    New-Item -ItemType Directory -Force $failState | Out-Null
+    $script:failAfterStaging = $true
+    Rejects { Install-Touchpad $payload $failState $true } 'Staging failure was reported as success' 'Injected failure after staging'
+    $script:failAfterStaging = $false
+    $failRecord = Get-Content -LiteralPath (Join-Path $failState 'installed.json') -Raw | ConvertFrom-Json
+    Assert ('oem42.inf' -in @($failRecord.Packages | ForEach-Object Name)) 'Failed install did not record the staged package'
+    Assert ($failRecord.CertificateImported) 'Failed install did not record certificate trust it added'
+    Remove-Item -LiteralPath (Join-Path $fakeWindows 'INF\oem42.inf')
+    $script:calls.Clear()
+    $script:imports = 0
+
     Rejects { Assert-CertificateTrust $false } 'Validation accepted an untrusted certificate' 'not trusted'
     Assert-CertificateTrust $true
     Rejects { Install-Touchpad $payload $state $false } 'Unapproved certificate trust accepted' 'not trusted'
@@ -109,6 +136,7 @@ try {
     $record = Join-Path $state 'installed.json'
     $owned = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
     Assert ($owned.Packages[0].Name -eq 'oem42.inf') 'Incorrect package ownership'
+    Assert ($owned.CertificateImported) 'Certificate trust added by Setup was not recorded'
     $ownedNames = @($owned.Packages | ForEach-Object Name)
     Assert ('oem7.inf' -in $ownedNames) 'Signed preview-era package was not adopted'
     Assert ('oem8.inf' -notin $ownedNames -and 'oem9.inf' -notin $ownedNames) 'Unsigned or changed preview-era package was adopted'
@@ -141,6 +169,12 @@ try {
     Assert ($calls.Count -eq 2 -and $calls[0] -eq '/delete-driver oem42.inf /uninstall' -and
         $calls[1] -eq '/delete-driver oem7.inf /uninstall') 'Uninstall touched unexpected packages or force-deleted'
     Assert (-not (Test-Path -LiteralPath $record)) 'Successful uninstall retained ownership record'
+    Assert ($script:certRemovals -gt 0) 'Uninstall kept certificate trust that Setup added'
+    # Trust that existed before Setup is never recorded, so it is never removed.
+    $script:certRemovals = 0
+    [pscustomobject]@{Packages=@(); CertificateImported=$false} | ConvertTo-Json | Set-Content -LiteralPath $record
+    Uninstall-Touchpad $state | Out-Null
+    Assert ($script:certRemovals -eq 0) 'Uninstall removed certificate trust it did not add'
     $script:calls.Clear()
     Assert ((Uninstall-Touchpad $state) -eq 0 -and $calls.Count -eq 0) 'Missing ownership record blocked uninstall or removed drivers'
     Write-Host 'PASS: installer payload tamper/missing/path validation, explicit certificate consent, backup-before-install, exact ownership, preview record adoption, reused package names, uninstall failures and recovery records'

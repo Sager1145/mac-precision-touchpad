@@ -1,0 +1,13 @@
+<Project>
+  <!--
+    Imported automatically by every project under src after its own settings.
+    Record only the PDB file name in each binary's debug directory, not the
+    build machine's full path, which includes the developer's user name.
+    %25 is MSBuild's escape for a literal percent sign.
+  -->
+  <ItemDefinitionGroup>
+    <Link>
+      <AdditionalOptions>%(AdditionalOptions) /PDBALTPATH:%25_PDB%25</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

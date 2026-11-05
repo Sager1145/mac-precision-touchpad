@@ -35,6 +35,17 @@ function Get-TrustedStateDirectory {
             }
         }
     }
+    # Logs record user and machine names. Program Files lets every account
+    # read, so limit this folder to SYSTEM and Administrators. Only the access
+    # list is written; the verified owner is left as it is.
+    $protected = New-Object Security.AccessControl.DirectorySecurity
+    $protected.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @('S-1-5-18','S-1-5-32-544')) {
+        $protected.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+            (New-Object Security.Principal.SecurityIdentifier($sid)), 'FullControl',
+            'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+    }
+    (Get-Item -LiteralPath $directory -Force).SetAccessControl($protected)
     return $directory
 }
 
@@ -89,10 +100,7 @@ namespace TouchpadInstaller {
 }
 
 function Assert-CertificateTrust([bool]$TrustCertificate) {
-    $thumb = $script:CertificateThumbprint
-    $trusted = (Test-Path "Cert:\LocalMachine\Root\$thumb") -and
-        (Test-Path "Cert:\LocalMachine\TrustedPublisher\$thumb")
-    if (-not $trusted -and -not $TrustCertificate) {
+    if (-not (Test-CertificateTrusted) -and -not $TrustCertificate) {
         throw 'The bundled test certificate is not trusted. Select the certificate trust task in Setup, or install its public certificate manually as described in the guide.'
     }
 }
@@ -126,19 +134,61 @@ function Test-ProjectPackage([object[]]$Drivers, [string]$Name) {
         $signature.SignerCertificate.Thumbprint -eq $script:CertificateThumbprint)
 }
 
+function Get-RecordValue([object]$Object, [string]$Name) {
+    # Ownership records may be old, partial or hand-made. Read fields without
+    # tripping strict mode on missing properties.
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($property) { return $property.Value }
+    return $null
+}
+
 function Get-LegacyOwnedPackages([object[]]$Drivers) {
     # Preview builds recorded ownership under ProgramData, which ordinary users
     # can write. Adopt an entry only while it still matches its recorded hash
-    # and is a driver-store package signed by this project's certificate.
+    # and is a driver-store package signed by this project's certificate. A
+    # malformed record is ignored rather than allowed to fail Setup.
     $legacy = Join-Path $env:ProgramData 'Sager1145\MacPrecisionTouchpad\installed.json'
     if (-not (Test-Path -LiteralPath $legacy)) { return @() }
-    try { $record = Get-Content -LiteralPath $legacy -Raw | ConvertFrom-Json } catch { return @() }
-    return @(@($record.Packages) | Where-Object {
-        $_ -and $_.Name -match '^oem[0-9]+\.inf$' -and $_.SHA256 -and
-        (Test-Path -LiteralPath (Join-Path "$env:WINDIR\INF" $_.Name)) -and
-        (Get-FileHash -LiteralPath (Join-Path "$env:WINDIR\INF" $_.Name)).Hash -eq $_.SHA256 -and
-        (Test-ProjectPackage $Drivers $_.Name)
-    } | ForEach-Object { [pscustomobject]@{Name=$_.Name; SHA256=$_.SHA256} })
+    try {
+        $record = Get-Content -LiteralPath $legacy -Raw | ConvertFrom-Json
+        $adopted = @()
+        foreach ($entry in @(Get-RecordValue $record 'Packages')) {
+            $name = [string](Get-RecordValue $entry 'Name')
+            $hash = [string](Get-RecordValue $entry 'SHA256')
+            if ($name -notmatch '^oem[0-9]+\.inf$' -or -not $hash) { continue }
+            $inf = Join-Path "$env:WINDIR\INF" $name
+            if ((Test-Path -LiteralPath $inf) -and (Get-FileHash -LiteralPath $inf).Hash -eq $hash -and
+                (Test-ProjectPackage $Drivers $name)) {
+                $adopted += [pscustomobject]@{Name=$name; SHA256=$hash}
+            }
+        }
+        return $adopted
+    } catch {
+        Write-Host "Ignoring unreadable preview ownership record: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+function Test-CertificateTrusted {
+    $thumb = $script:CertificateThumbprint
+    return ((Test-Path "Cert:\LocalMachine\Root\$thumb") -and
+        (Test-Path "Cert:\LocalMachine\TrustedPublisher\$thumb"))
+}
+
+function Remove-TrustedCertificate {
+    foreach ($store in @('Root','TrustedPublisher')) {
+        $path = "Cert:\LocalMachine\$store\$($script:CertificateThumbprint)"
+        if (Test-Path $path) { Remove-Item -LiteralPath $path }
+    }
+}
+
+function Save-Ownership([string]$StateDirectory, [object]$State) {
+    $statePath = Join-Path $StateDirectory 'installed.json'
+    $temporaryState = Join-Path $StateDirectory ([guid]::NewGuid().ToString('N') + '.json')
+    $State | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $temporaryState -Encoding UTF8
+    if ([IO.File]::Exists($statePath)) { [IO.File]::Replace($temporaryState, $statePath, [NullString]::Value) }
+    else { [IO.File]::Move($temporaryState, $statePath) }
 }
 
 function Install-Touchpad([string]$Payload, [string]$StateDirectory, [bool]$TrustCertificate) {
@@ -146,42 +196,62 @@ function Install-Touchpad([string]$Payload, [string]$StateDirectory, [bool]$Trus
     Assert-TestSigning
     $thumb = $script:CertificateThumbprint
     Assert-CertificateTrust $TrustCertificate
+    $statePath = Join-Path $StateDirectory 'installed.json'
+    $old = $null
+    if (Test-Path -LiteralPath $statePath) { $old = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json }
+    $certificateImported = [bool](Get-RecordValue $old 'CertificateImported')
+    $alreadyStaged = @()
+    $addAttempted = $false
+    $published = @()
+    $drivers = $null
+    $backup = $null
+    $code = 0
     if ($TrustCertificate) {
+        # Only trust that Setup itself added is removed again at uninstall.
+        $wasTrusted = Test-CertificateTrusted
         foreach ($store in @('Root','TrustedPublisher')) {
             Import-Certificate -FilePath (Join-Path $Payload 'AmtPtpDeviceTest.cer') -CertStoreLocation "Cert:\LocalMachine\$store" | Out-Null
         }
+        if (-not $wasTrusted) { $certificateImported = $true }
     }
-    foreach ($file in @('amtptpdevice.cat','AmtPtpDeviceUsbUm.dll','AmtPtpHidFilter.sys',
-        'AmtPtpDeviceUsbKm.sys','AmtPtpDeviceSpiKm.sys')) {
-        $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $Payload $file)
-        if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -ne $thumb) {
-            throw "Invalid driver signature: $file"
+    try {
+        foreach ($file in @('amtptpdevice.cat','AmtPtpDeviceUsbUm.dll','AmtPtpHidFilter.sys',
+            'AmtPtpDeviceUsbKm.sys','AmtPtpDeviceSpiKm.sys')) {
+            $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $Payload $file)
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -ne $thumb) {
+                throw "Invalid driver signature: $file"
+            }
+        }
+        $backup = Join-Path $StateDirectory ('backup-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss'))
+        New-Item -ItemType Directory -Force $backup | Out-Null
+        # Preserve any existing driver from this family before rebinding devices.
+        $drivers = @(Get-WindowsDriver -Online -All)
+        $previous = @($drivers | Where-Object {
+            [IO.Path]::GetFileName($_.OriginalFileName) -in @('amtptpdevice.inf','amtptphidfilter.inf')
+        })
+        foreach ($driver in $previous) { Invoke-PnpUtil @('/export-driver', $driver.Driver, $backup) | Out-Null }
+        $alreadyStaged = @(Find-PublishedPackage $Payload)
+        $addAttempted = $true
+        $code = Invoke-PnpUtil @('/add-driver', (Join-Path $Payload 'AmtPtpDevice.inf'), '/install')
+    } finally {
+        # Record what this run added even when a step failed, so uninstall can
+        # still remove a package pnputil staged before reporting an error.
+        $owned = @()
+        if ($addAttempted) {
+            $published = @(Find-PublishedPackage $Payload)
+            $owned = @($published | Where-Object { $_.Name -notin @($alreadyStaged | ForEach-Object Name) })
+        }
+        $owned += @(@(Get-RecordValue $old 'Packages') | Where-Object {
+            $_ -and (Get-RecordValue $_ 'Name') -and $_.Name -notin @($owned | ForEach-Object Name) })
+        if ($drivers) {
+            $owned += @(Get-LegacyOwnedPackages $drivers | Where-Object { $_.Name -notin @($owned | ForEach-Object Name) })
+        }
+        if ($owned.Count -or $certificateImported -or $old) {
+            Save-Ownership $StateDirectory ([pscustomobject]@{Version=$manifest.Version; Packages=$owned;
+                CertificateImported=$certificateImported; Backup=$backup; RebootRequired=($code -eq 3010)})
         }
     }
-    $backup = Join-Path $StateDirectory ('backup-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss'))
-    New-Item -ItemType Directory -Force $backup | Out-Null
-    # Preserve any existing driver from this family before rebinding devices.
-    $drivers = @(Get-WindowsDriver -Online -All)
-    $previous = @($drivers | Where-Object {
-        [IO.Path]::GetFileName($_.OriginalFileName) -in @('amtptpdevice.inf','amtptphidfilter.inf')
-    })
-    foreach ($driver in $previous) { Invoke-PnpUtil @('/export-driver', $driver.Driver, $backup) | Out-Null }
-    $alreadyStaged = @(Find-PublishedPackage $Payload)
-    $code = Invoke-PnpUtil @('/add-driver', (Join-Path $Payload 'AmtPtpDevice.inf'), '/install')
-    $published = @(Find-PublishedPackage $Payload)
     if (-not $published.Count) { throw 'The signed driver package was not found in the Windows driver store after installation.' }
-    $statePath = Join-Path $StateDirectory 'installed.json'
-    $owned = @($published | Where-Object { $_.Name -notin @($alreadyStaged | ForEach-Object Name) })
-    if (Test-Path -LiteralPath $statePath) {
-        $old = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-        $owned += @($old.Packages | Where-Object { $_.Name -notin @($owned | ForEach-Object Name) })
-    }
-    $owned += @(Get-LegacyOwnedPackages $drivers | Where-Object { $_.Name -notin @($owned | ForEach-Object Name) })
-    $temporaryState = Join-Path $StateDirectory ([guid]::NewGuid().ToString('N') + '.json')
-    [pscustomobject]@{Version=$manifest.Version; Packages=$owned; Backup=$backup; RebootRequired=($code -eq 3010)} |
-        ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $temporaryState -Encoding UTF8
-    if ([IO.File]::Exists($statePath)) { [IO.File]::Replace($temporaryState, $statePath, [NullString]::Value) }
-    else { [IO.File]::Move($temporaryState, $statePath) }
     Write-Host "Driver staged/installed. Reconnect an unplugged trackpad to bind the update. Previous drivers: $backup"
     if ($code -eq 3010) { return 3010 }
     return 0
@@ -199,11 +269,11 @@ function Uninstall-Touchpad([string]$StateDirectory) {
     # Validate every entry before deleting any package. Never remove by device
     # vendor wildcard, never force-delete, and never touch another fork's INF.
     $remove = @()
-    foreach ($package in @($state.Packages)) {
-        if ($package.Name -notmatch '^oem[0-9]+\.inf$') { throw 'Invalid published INF in ownership record.' }
+    foreach ($package in @(Get-RecordValue $state 'Packages')) {
+        if ([string](Get-RecordValue $package 'Name') -notmatch '^oem[0-9]+\.inf$') { throw 'Invalid published INF in ownership record.' }
         $inf = Join-Path "$env:WINDIR\INF" $package.Name
         if (-not (Test-Path -LiteralPath $inf)) { continue }
-        if ((Get-FileHash -LiteralPath $inf).Hash -ne $package.SHA256) {
+        if ((Get-FileHash -LiteralPath $inf).Hash -ne [string](Get-RecordValue $package 'SHA256')) {
             # Windows reuses freed oemNN names. This one now belongs elsewhere.
             Write-Host "Skipping $($package.Name): it no longer matches the installed package."
             continue
@@ -217,7 +287,10 @@ function Uninstall-Touchpad([string]$StateDirectory) {
             if ($code -eq 3010) { $reboot = 3010 }
         }
     }
+    # Undo certificate trust only when this installer added it. Trust that was
+    # present before Setup ran belongs to someone else and stays.
+    if ([bool](Get-RecordValue $state 'CertificateImported')) { Remove-TrustedCertificate }
     Remove-Item -LiteralPath $path
-    # Keep backups, logs and shared test-certificate trust intact for recovery.
+    # Keep backups and logs for recovery.
     return $reboot
 }

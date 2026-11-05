@@ -12,6 +12,12 @@
 
 TRACELOGGING_DECLARE_PROVIDER(g_PtpBluetoothTrace);
 
+// Raw touch packets and delivered reports describe what the user is doing.
+// Log them only at verbose level under their own keyword, so a session must
+// ask for them explicitly.
+#define PTP_TRACE_LEVEL_VERBOSE   5
+#define PTP_TRACE_KEYWORD_INPUT   0x1
+
 #include "Trace.h"
 
 EXTERN_C_START

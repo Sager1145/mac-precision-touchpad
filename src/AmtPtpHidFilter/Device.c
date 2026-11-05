@@ -56,11 +56,8 @@ PtpFilterCreateDevice(
         goto exit;
     }
 
-    status = WdfDeviceCreateDeviceInterface(device,&GUID_DEVICEINTERFACE_AmtPtpHidFilter, NULL);
-    if (!NT_SUCCESS(status)) {
-        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "WdfDeviceCreateDeviceInterface failed: %!STATUS!", status);
-        goto exit;
-    }
+    // No device interface: nothing opens the filter directly, and HIDCLASS
+    // exposes the trackpad to applications through its own HID interface.
 
     // Initialize read buffer
     status = WdfLookasideListCreate(WDF_NO_OBJECT_ATTRIBUTES, REPORT_BUFFER_SIZE,

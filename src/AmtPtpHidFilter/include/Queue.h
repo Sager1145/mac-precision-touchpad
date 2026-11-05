@@ -12,7 +12,6 @@ PtpFilterIoQueueInitialize(
 // Queue context
 typedef struct _QUEUE_CONTEXT {
     WDFDEVICE   Device;
-    WDFIOTARGET DeviceIoTarget;
 } QUEUE_CONTEXT, *PQUEUE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(QUEUE_CONTEXT, PtpFilterQueueGetContext)

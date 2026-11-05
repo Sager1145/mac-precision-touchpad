@@ -4,6 +4,9 @@ param(
     [switch]$TrustCertificate
 )
 $ErrorActionPreference = 'Stop'
+# This runs elevated. Load modules only from the system location, never from a
+# user's Documents folder, which -NoProfile leaves on the module path.
+$env:PSModulePath = Join-Path $PSHOME 'Modules'
 . (Join-Path $PSScriptRoot 'DriverTools.ps1')
 $exitCode = 0
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -13,7 +16,12 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 $StateDirectory = Get-TrustedStateDirectory
 $errorFile = Join-Path $StateDirectory 'last-error.txt'
-Start-Transcript -Path (Join-Path $StateDirectory ($Action.ToLower() + '.log')) -Append
+$logPath = Join-Path $StateDirectory ($Action.ToLower() + '.log')
+# Keep one previous log instead of growing without bound.
+if ((Test-Path -LiteralPath $logPath) -and (Get-Item -LiteralPath $logPath).Length -gt 1MB) {
+    Move-Item -LiteralPath $logPath -Destination "$logPath.old" -Force
+}
+Start-Transcript -Path $logPath -Append
 try {
     if ($Action -eq 'Validate') {
         # Fail before files are copied, so a rejected install leaves nothing behind.

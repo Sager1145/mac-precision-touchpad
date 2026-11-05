@@ -38,7 +38,6 @@ PtpFilterIoQueueInitialize(
 
     queueContext = PtpFilterQueueGetContext(queue);
     queueContext->Device = deviceContext->Device;
-    queueContext->DeviceIoTarget = deviceContext->HidIoTarget;
 
     // Second queue for HID read requests
     WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, WdfIoQueueDispatchManual);

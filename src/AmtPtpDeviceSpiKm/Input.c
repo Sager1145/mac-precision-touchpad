@@ -236,8 +236,9 @@ AmtPtpRequestCompletionRoutine(
 		PtpReport.Contacts[Count].Confidence = (pSpiTrackpadPacket->Fingers[Count].TouchMajor < 2500 &&
 			pSpiTrackpadPacket->Fingers[Count].TouchMinor < 2500) ? 1 : 0;
 
+		// Per-contact positions stay out of the always-on in-flight recorder.
 		TraceEvents(
-			TRACE_LEVEL_INFORMATION,
+			TRACE_LEVEL_VERBOSE,
 			TRACE_HID_INPUT,
 			"%!FUNC! PTP Contact %d OX %d, OY %d, X %d, Y %d",
 			Count,
