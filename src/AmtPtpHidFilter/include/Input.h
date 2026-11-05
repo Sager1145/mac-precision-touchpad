@@ -1,6 +1,9 @@
 // Input.h: Input processing and device definitions
 #pragma once
 
+EVT_WDF_TIMER PtpFilterResamplingTimerCallback;
+VOID PtpFilterCancelTransportRead(_In_ PDEVICE_CONTEXT DeviceContext);
+
 VOID
 PtpFilterInputProcessRequest(
 	_In_ WDFDEVICE Device,

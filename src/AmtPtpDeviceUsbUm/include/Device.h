@@ -66,6 +66,7 @@ typedef struct _DEVICE_CONTEXT
 	INTERP_FINGER				InterpFingers[INTERP_MAX_FINGERS];
 	UCHAR						InterpButton;
 	PTP_REPORT                  LastDeliveredReport;
+	PTP_REPORT                  LastPhysicalReport;
 	BOOLEAN                     InterpTimerEmission;
 	HANDLE                      ResamplingWaitTimer;
 	HANDLE                      ResamplingStopEvent;

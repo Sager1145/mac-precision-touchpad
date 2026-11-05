@@ -236,6 +236,9 @@
     <ClInclude Include="include\HidDevice.h" />
     <ClInclude Include="include\HidMiniport.h" />
     <ClInclude Include="include\Input.h" />
+    <ClInclude Include="include\Type5Input.h" />
+    <ClInclude Include="include\ResamplingTypes.h" />
+    <ClInclude Include="include\Type5Resampling.h" />
     <ClInclude Include="include\Metadata\MagicTrackpad2.h" />
     <ClInclude Include="include\Metadata\StaticHidRegistry.h" />
     <ClInclude Include="include\Metadata\WindowsHID.h" />

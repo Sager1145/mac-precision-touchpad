@@ -88,6 +88,15 @@
     <ClInclude Include="include\Input.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\Type5Input.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ResamplingTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Type5Resampling.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="include\HidDevice.h">
       <Filter>Header Files</Filter>
     </ClInclude>

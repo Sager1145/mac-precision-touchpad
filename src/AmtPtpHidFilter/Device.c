@@ -42,6 +42,9 @@ PtpFilterCreateDevice(
 
     // Initialize context and interface
     deviceContext = PtpFilterGetContext(device);
+    KeInitializeSpinLock(&deviceContext->InputLock);
+    deviceContext->PtpReportTouch = TRUE;
+    deviceContext->PtpReportButton = TRUE;
     deviceContext->Device = device;
     deviceContext->WdmDeviceObject = WdfDeviceWdmGetDeviceObject(device);
     if (deviceContext->WdmDeviceObject == NULL) {
@@ -85,6 +88,15 @@ PtpFilterCreateDevice(
     }
 
     // Set initial state
+    WDF_TIMER_CONFIG_INIT_PERIODIC(&timerConfig, PtpFilterResamplingTimerCallback, PTP_RESAMPLE_PERIOD_MS);
+    timerConfig.AutomaticSerialization = FALSE;
+    timerConfig.UseHighResolutionTimer = TRUE;
+    timerConfig.TolerableDelay = 0;
+    WDF_OBJECT_ATTRIBUTES_INIT(&deviceAttributes);
+    deviceAttributes.ParentObject = device;
+    status = WdfTimerCreate(&timerConfig, &deviceAttributes, &deviceContext->ResamplingTimer);
+    if (!NT_SUCCESS(status)) goto exit;
+
     deviceContext->VendorID = 0;
     deviceContext->ProductID = 0;
     deviceContext->VersionNumber = 0;
@@ -140,6 +152,7 @@ PtpFilterDeviceD0Entry(
     PAGED_CODE();
     UNREFERENCED_PARAMETER(Device);
     UNREFERENCED_PARAMETER(PreviousState);
+    TraceLoggingWrite(g_PtpBluetoothTrace, "PowerEntry");
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Entry");
 
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Exit, Status = %!STATUS!", status);
@@ -164,8 +177,12 @@ PtpFilterDeviceD0Exit(
 
     // Reset device state
     deviceContext->DeviceConfigured = FALSE;
+    WdfTimerStop(deviceContext->HidTransportRecoveryTimer, TRUE);
+    WdfTimerStop(deviceContext->ResamplingTimer, TRUE);
+    PtpFilterCancelTransportRead(deviceContext);
 
     // Cancelling all outstanding requests
+    TraceLoggingWrite(g_PtpBluetoothTrace, "PowerExit");
     while (NT_SUCCESS(status)) {
         status = WdfIoQueueRetrieveNextRequest(
             deviceContext->HidReadQueue,
@@ -229,15 +246,25 @@ PtpFilterSelfManagedIoInit(
         // If this failed, we will retry after 2 seconds (and pretend nothing happens)
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! PtpFilterConfigureMultiTouch failed, Status = %!STATUS!", status);
         status = STATUS_SUCCESS;
-        WdfTimerStart(deviceContext->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_SEC(2));
+        WdfTimerStart(deviceContext->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_MS(250));
         goto exit;
     }
 
     // Stamp last query performance counter
-    KeQueryPerformanceCounter(&deviceContext->LastReportTime);
+    LARGE_INTEGER frequency;
+    deviceContext->LastReportTime = KeQueryPerformanceCounter(&frequency);
+    deviceContext->QpcFrequency = frequency.QuadPart;
+    deviceContext->LastScanTicks = 0;
+    RtlZeroMemory(&deviceContext->LastDeliveredReport, sizeof(PTP_REPORT));
+    RtlZeroMemory(&deviceContext->LastPhysicalReport, sizeof(PTP_REPORT));
+    RtlZeroMemory(&deviceContext->Resampling, sizeof(deviceContext->Resampling));
+    deviceContext->LastEmitTime = 0;
 
     // Set device state
     deviceContext->DeviceConfigured = TRUE;
+    TraceLoggingWrite(g_PtpBluetoothTrace, "ConfiguredInitial");
+    WdfTimerStart(deviceContext->ResamplingTimer, WDF_REL_TIMEOUT_IN_MS(PTP_RESAMPLE_PERIOD_MS));
+    WdfWorkItemEnqueue(deviceContext->HidTransportRecoveryWorkItem);
 
 exit:
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Exit, Status = %!STATUS!", status);
@@ -263,20 +290,31 @@ PtpFilterSelfManagedIoRestart(
             TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! PtpFilterConfigureMultiTouch failed, Status = %!STATUS!", status);
             // If this failed, we will retry after 2 seconds (and pretend nothing happens)
             status = STATUS_SUCCESS;
-            WdfTimerStart(deviceContext->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_SEC(2));
+            WdfTimerStart(deviceContext->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_MS(250));
             goto exit;
         }
     }
     else {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! HID detour should already complete here");
         status = STATUS_INVALID_STATE_TRANSITION;
+        goto exit;
     }
 
     // Stamp last query performance counter
-    KeQueryPerformanceCounter(&deviceContext->LastReportTime);
+    LARGE_INTEGER frequency;
+    deviceContext->LastReportTime = KeQueryPerformanceCounter(&frequency);
+    deviceContext->QpcFrequency = frequency.QuadPart;
+    deviceContext->LastScanTicks = 0;
+    RtlZeroMemory(&deviceContext->LastDeliveredReport, sizeof(PTP_REPORT));
+    RtlZeroMemory(&deviceContext->LastPhysicalReport, sizeof(PTP_REPORT));
+    RtlZeroMemory(&deviceContext->Resampling, sizeof(deviceContext->Resampling));
+    deviceContext->LastEmitTime = 0;
 
     // Set device state
     deviceContext->DeviceConfigured = TRUE;
+    TraceLoggingWrite(g_PtpBluetoothTrace, "ConfiguredRestart");
+    WdfTimerStart(deviceContext->ResamplingTimer, WDF_REL_TIMEOUT_IN_MS(PTP_RESAMPLE_PERIOD_MS));
+    WdfWorkItemEnqueue(deviceContext->HidTransportRecoveryWorkItem);
 
 exit:
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Exit, Status = %!STATUS!", status);
@@ -310,7 +348,8 @@ PtpFilterConfigureMultiTouch(
         status = STATUS_NOT_SUPPORTED;
         goto exit;
     }
-    if (deviceContext->ProductID != HID_PID_MAGIC_TRACKPAD_2) {
+    if (deviceContext->ProductID != HID_PID_MAGIC_TRACKPAD_2 &&
+        deviceContext->ProductID != HID_PID_MAGIC_TRACKPAD_3) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! Product not supported: 0x%x", deviceContext->ProductID);
         status = STATUS_NOT_SUPPORTED;
         goto exit;
@@ -403,6 +442,7 @@ PtpFilterConfigureMultiTouch(
     pConfigIrp->UserBuffer = pHidPacket;
 
     WDF_REQUEST_SEND_OPTIONS_INIT(&configRequestSendOptions, WDF_REQUEST_SEND_OPTION_SYNCHRONOUS);
+    WDF_REQUEST_SEND_OPTIONS_SET_TIMEOUT(&configRequestSendOptions, WDF_REL_TIMEOUT_IN_SEC(2));
     if (WdfRequestSend(configRequest, deviceContext->HidIoTarget, &configRequestSendOptions) == FALSE) {
         status = WdfRequestGetStatus(configRequest);
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfRequestSend failed, Status = %!STATUS!", status);
@@ -433,11 +473,22 @@ PtpFilterRecoveryTimerCallback(
     device = WdfTimerGetParentObject(Timer);
     deviceContext = PtpFilterGetContext(device);
 
-    // We will try to reinitialize the device
-    status = PtpFilterSelfManagedIoRestart(device);
-    if (NT_SUCCESS(status)) {
-        // If succeeded, proceed to reissue the request.
-        // Otherwise it will retry the process after a few seconds.
-        PtpFilterInputIssueTransportRequest(device);
+    // A transient transport read error only needs another read. Re-running
+    // self-managed IO restart would reset ScanTime/contact history mid-gesture.
+    if (!deviceContext->DeviceConfigured) {
+        status = PtpFilterConfigureMultiTouch(device);
+        if (!NT_SUCCESS(status)) {
+            WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(500));
+            return;
+        }
+        if (deviceContext->QpcFrequency == 0) {
+            LARGE_INTEGER frequency;
+            deviceContext->LastReportTime = KeQueryPerformanceCounter(&frequency);
+            deviceContext->QpcFrequency = frequency.QuadPart;
+        }
+        deviceContext->DeviceConfigured = TRUE;
+        WdfTimerStart(deviceContext->ResamplingTimer, WDF_REL_TIMEOUT_IN_MS(PTP_RESAMPLE_PERIOD_MS));
     }
+    TraceLoggingWrite(g_PtpBluetoothTrace, "RecoveryReadIssued");
+    PtpFilterInputIssueTransportRequest(device);
 }

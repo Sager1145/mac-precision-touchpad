@@ -27,6 +27,7 @@ PtpFilterGetHidDescriptor(
 
 	switch (deviceContext->ProductID) {
 		case HID_PID_MAGIC_TRACKPAD_2:
+		case HID_PID_MAGIC_TRACKPAD_3:
 		{
 			TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_HID, "%!FUNC! Request HID Report Descriptor for Apple Magic Trackpad 2 Family");
 			hidDescriptorSize = PtpDefaultHidDescriptorMagicTrackpad2.bLength;
@@ -112,6 +113,7 @@ PtpFilterGetReportDescriptor(
 
 	switch (deviceContext->ProductID) {
 		case HID_PID_MAGIC_TRACKPAD_2:
+		case HID_PID_MAGIC_TRACKPAD_3:
 		{
 			hidDescriptorSize = PtpDefaultHidDescriptorMagicTrackpad2.DescriptorList[0].wReportLength;
 			selectedHidDescriptor = PtpReportDescriptorMagicTrackpad2;

@@ -3,6 +3,9 @@
 #include <Driver.h>
 #include "Driver.tmh"
 
+TRACELOGGING_DEFINE_PROVIDER(g_PtpBluetoothTrace, "AmtPtpBluetoothTrace",
+    (0xf56d6751, 0x6b0b, 0x4dba, 0xa7, 0x43, 0xa2, 0xf9, 0xa6, 0xab, 0x02, 0x91));
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text (INIT, DriverEntry)
 #pragma alloc_text (PAGE, PtpFilterEvtDeviceAdd)
@@ -39,6 +42,7 @@ DriverEntry(
     }
 
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Driver Initialized");
+    TraceLoggingRegister(g_PtpBluetoothTrace);
     return STATUS_SUCCESS;
 }
 
@@ -76,5 +80,6 @@ PtpFilterEvtDriverContextCleanup(
     //
     // Stop WPP Tracing
     //
+    TraceLoggingUnregister(g_PtpBluetoothTrace);
     WPP_CLEANUP(WdfDriverWdmGetDriverObject((WDFDRIVER)DriverObject));
 }

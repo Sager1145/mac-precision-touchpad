@@ -2,6 +2,32 @@
 
 #include <Driver.h>
 #include "Input.tmh"
+#include "Type5Input.h"
+#include "Type5Resampling.h"
+
+static VOID
+PtpFilterClearTransportRead(PDEVICE_CONTEXT Ctx, WDFREQUEST Request)
+{
+    KIRQL irql;
+    KeAcquireSpinLock(&Ctx->InputLock, &irql);
+    if (Ctx->TransportRequest == Request) Ctx->TransportRequest = NULL;
+    KeReleaseSpinLock(&Ctx->InputLock, irql);
+}
+
+VOID
+PtpFilterCancelTransportRead(_In_ PDEVICE_CONTEXT Ctx)
+{
+    KIRQL irql;
+    WDFREQUEST request;
+    KeAcquireSpinLock(&Ctx->InputLock, &irql);
+    request = Ctx->TransportRequest;
+    if (request != NULL) WdfObjectReference(request);
+    KeReleaseSpinLock(&Ctx->InputLock, irql);
+    if (request != NULL) {
+        WdfRequestCancelSentRequest(request);
+        WdfObjectDereference(request);
+    }
+}
 
 VOID
 PtpFilterInputProcessRequest(
@@ -13,6 +39,8 @@ PtpFilterInputProcessRequest(
 	PDEVICE_CONTEXT deviceContext;
 
 	deviceContext = PtpFilterGetContext(Device);
+	TraceLoggingWrite(g_PtpBluetoothTrace, "ConsumerRead",
+		TraceLoggingBoolean(deviceContext->DeviceConfigured, "Configured"));
 	status = WdfRequestForwardToIoQueue(Request, deviceContext->HidReadQueue);
 	if (!NT_SUCCESS(status)) {
 		TraceEvents(TRACE_LEVEL_ERROR, TRACE_INPUT, "%!FUNC! WdfRequestForwardToIoQueue fails, status = %!STATUS!", status);
@@ -52,15 +80,19 @@ PtpFilterInputIssueTransportRequest(
 
 	deviceContext = PtpFilterGetContext(Device);
 
+	if (!deviceContext->DeviceConfigured ||
+		InterlockedCompareExchange(&deviceContext->TransportReadActive, 1, 0) != 0) return;
+
 	WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, WORKER_REQUEST_CONTEXT);
 	attributes.ParentObject = Device;
 	status = WdfRequestCreate(&attributes, deviceContext->HidIoTarget, &hidReadRequest);
 	if (!NT_SUCCESS(status)) {
-		// This can fail for Bluetooth devices. We will set up a 3 second timer for retry triage.
+		// Retry startup when the Bluetooth transport becomes available.
 		// Typically this should not fail for USB transport.
 		TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfRequestCreate fails, status = %!STATUS!", status);
 		deviceContext->DeviceConfigured = FALSE;
-		WdfTimerStart(deviceContext->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_SEC(3));
+		WdfTimerStart(deviceContext->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_MS(250));
+		InterlockedExchange(&deviceContext->TransportReadActive, 0);
 		return;
 	}
 
@@ -70,6 +102,7 @@ PtpFilterInputIssueTransportRequest(
 		TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfMemoryCreateFromLookaside fails, status = %!STATUS!", status);
 		WdfObjectDelete(hidReadRequest);
 		WdfDeviceSetFailed(deviceContext->Device, WdfDeviceFailedAttemptRestart);
+		InterlockedExchange(&deviceContext->TransportReadActive, 0);
 		return;
 	}
 
@@ -93,18 +126,27 @@ PtpFilterInputIssueTransportRequest(
 		}
 
 		WdfDeviceSetFailed(deviceContext->Device, WdfDeviceFailedAttemptRestart);
+		InterlockedExchange(&deviceContext->TransportReadActive, 0);
 		return;
 	}
 
 	// Set callback
+	TraceLoggingWrite(g_PtpBluetoothTrace, "IssueTransportRead",
+		TraceLoggingBoolean(deviceContext->DeviceConfigured, "Configured"));
 	WdfRequestSetCompletionRoutine(hidReadRequest, PtpFilterInputRequestCompletionCallback, requestContext);
+	KIRQL irql;
+	KeAcquireSpinLock(&deviceContext->InputLock, &irql);
+	deviceContext->TransportRequest = hidReadRequest;
+	KeReleaseSpinLock(&deviceContext->InputLock, irql);
 
 	requestStatus = WdfRequestSend(hidReadRequest, deviceContext->HidIoTarget, NULL);
 	if (!requestStatus) {
-		// Retry after 3 seconds, in case this is a transportation issue.
-		TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! PtpFilterInputIssueTransportRequest request failed to sent");
+		PtpFilterClearTransportRead(deviceContext, hidReadRequest);
 		deviceContext->DeviceConfigured = FALSE;
-		WdfTimerStart(deviceContext->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_SEC(3));
+		InterlockedExchange(&deviceContext->TransportReadActive, 0);
+		// Retry promptly while a Bluetooth connection is being established.
+		TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! PtpFilterInputIssueTransportRequest request failed to sent");
+		WdfTimerStart(deviceContext->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_MS(250));
 
 		if (hidReadOutputMemory != NULL) {
 			WdfObjectDelete(hidReadOutputMemory);
@@ -116,138 +158,128 @@ PtpFilterInputIssueTransportRequest(
 	}
 }
 
+// Caller holds InputLock; complete the returned request after releasing it.
+static WDFREQUEST
+PtpFilterPrepareDelivery(PDEVICE_CONTEXT Ctx, LONGLONG Now, BOOLEAN Timer, NTSTATUS* Status)
+{
+    PTP_REPORT sample, report;
+    WDFREQUEST request;
+    WDFMEMORY memory;
+    if (!Ctx->DeviceConfigured || !Ctx->Resampling.HasSample) return NULL;
+    PtpFilterResampleBuild(&Ctx->Resampling, Now, Ctx->QpcFrequency,
+        Ctx->X.max - Ctx->X.min, Ctx->Y.max - Ctx->Y.min, &sample);
+    if (!Ctx->PtpReportTouch) sample.ContactCount = 0;
+    if (!Ctx->PtpReportButton) sample.IsButtonClicked = FALSE;
+    PtpFilterNormalizeReport(&sample, &Ctx->LastDeliveredReport, &report);
+    if (!report.ContactCount && report.IsButtonClicked == Ctx->LastDeliveredReport.IsButtonClicked) return NULL;
+    *Status = WdfIoQueueRetrieveNextRequest(Ctx->HidReadQueue, &request);
+    if (!NT_SUCCESS(*Status)) return NULL;
+    LONGLONG ticks = PtpFilterScanTicks(Now - Ctx->LastReportTime.QuadPart,
+        Ctx->QpcFrequency, Ctx->LastScanTicks);
+    report.ScanTime = (USHORT)ticks;
+    *Status = WdfRequestRetrieveOutputMemory(request, &memory);
+    if (NT_SUCCESS(*Status)) *Status = WdfMemoryCopyFromBuffer(memory, 0, &report, sizeof(report));
+    if (NT_SUCCESS(*Status)) {
+        Ctx->LastDeliveredReport = report;
+        Ctx->LastScanTicks = ticks;
+        Ctx->LastEmitTime = Now;
+        WdfRequestSetInformation(request, sizeof(report));
+        TraceLoggingWrite(g_PtpBluetoothTrace, "DeliveredInput",
+            TraceLoggingBoolean(Timer, "Timer"), TraceLoggingInt64(Now, "Qpc"),
+            TraceLoggingBinary(&report, sizeof(report), "Report"));
+    }
+    return request;
+}
+
+VOID
+PtpFilterResamplingTimerCallback(_In_ WDFTIMER Timer)
+{
+    PDEVICE_CONTEXT ctx = PtpFilterGetContext(WdfTimerGetParentObject(Timer));
+    WDFREQUEST request = NULL;
+    NTSTATUS status = STATUS_SUCCESS;
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&ctx->InputLock, &oldIrql);
+    LARGE_INTEGER now = KeQueryPerformanceCounter(NULL);
+    if (ctx->QpcFrequency > 0 &&
+        (now.QuadPart - ctx->LastEmitTime) * 1000 / ctx->QpcFrequency >= PTP_RESAMPLE_PERIOD_MS - 1)
+        request = PtpFilterPrepareDelivery(ctx, now.QuadPart, TRUE, &status);
+    KeReleaseSpinLock(&ctx->InputLock, oldIrql);
+    if (request != NULL) WdfRequestComplete(request, status);
+}
+
 VOID
 PtpFilterInputRequestCompletionCallback(
-	_In_ WDFREQUEST Request,
-	_In_ WDFIOTARGET Target,
-	_In_ PWDF_REQUEST_COMPLETION_PARAMS Params,
-	_In_ WDFCONTEXT Context
+    _In_ WDFREQUEST Request,
+    _In_ WDFIOTARGET Target,
+    _In_ PWDF_REQUEST_COMPLETION_PARAMS Params,
+    _In_ WDFCONTEXT Context
 )
 {
-	PWORKER_REQUEST_CONTEXT requestContext;
-	PDEVICE_CONTEXT deviceContext;
-	NTSTATUS status;
-
-	WDFREQUEST ptpRequest;
-	PTP_REPORT ptpOutputReport;
-	WDFMEMORY  ptpRequestMemory;
-
-	size_t responseLength;
-	PUCHAR responseBuffer;
-
-	LARGE_INTEGER currentTSC;
-	LONGLONG tSCDelta;
-
-	const TRACKPAD_FINGER* f;
-	const TRACKPAD_FINGER_TYPE5* f_type5;
-	size_t raw_n, headerSize, fingerprintSize = 0;
-	INT x, y = 0;
-
-	UNREFERENCED_PARAMETER(Target);
-	
-	requestContext = (PWORKER_REQUEST_CONTEXT)Context;
-	deviceContext = requestContext->DeviceContext;
-	responseLength = (size_t)(LONG)WdfRequestGetInformation(Request);
-	responseBuffer = WdfMemoryGetBuffer(Params->Parameters.Ioctl.Output.Buffer, NULL);
-	headerSize = deviceContext->InputHeaderSize;
-	fingerprintSize = deviceContext->InputFingerSize;
-
-	// Pre-flight check 0: Right now we only have Magic Trackpad 2 (BT and USB)
-	if (deviceContext->VendorID != HID_VID_APPLE_USB && deviceContext->VendorID != HID_VID_APPLE_BT) {
-		TraceEvents(TRACE_LEVEL_ERROR, TRACE_INPUT, "%!FUNC! Unsupported device entered this routine");
-		WdfDeviceSetFailed(deviceContext->Device, WdfDeviceFailedNoRestart);
-		goto cleanup;
-	}
-
-	// Pre-flight check 1: if size is 0, this is not something we need. Ignore the read, and issue next request.
-	if (responseLength <= 0) {
-		WdfWorkItemEnqueue(requestContext->DeviceContext->HidTransportRecoveryWorkItem);
-		goto cleanup;
-	}
-
-	// Pre-flight check 2: the response size should be sane
-	if (responseLength < deviceContext->InputHeaderSize || (responseLength - deviceContext->InputHeaderSize) % deviceContext->InputFingerSize != 0) {
-		TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_INPUT, "%!FUNC! Malformed input received. Length = %llu. Attempt to reconfigure the device.", responseLength);
-		WdfTimerStart(deviceContext->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_SEC(3));
-		goto cleanup;
-	}
-
-	// Read report and fulfill PTP request. If no report is found, just exit.
-	status = WdfIoQueueRetrieveNextRequest(deviceContext->HidReadQueue, &ptpRequest);
-	if (!NT_SUCCESS(status)) {
-		TraceEvents(TRACE_LEVEL_ERROR, TRACE_INPUT, "%!FUNC! WdfIoQueueRetrieveNextRequest failed with %!STATUS!", status);
-		goto cleanup;
-	}
-
-	// Report header
-	ptpOutputReport.ReportID = REPORTID_MULTITOUCH;
-	ptpOutputReport.IsButtonClicked = 0;
-
-	// Capture current timestamp and get input delta in 100us unit
-	KeQueryPerformanceCounter(&currentTSC);
-	tSCDelta = (currentTSC.QuadPart - deviceContext->LastReportTime.QuadPart) / 100;
-	ptpOutputReport.ScanTime = (tSCDelta >= 0xFF) ? 0xFF : (USHORT)tSCDelta;
-	deviceContext->LastReportTime.QuadPart = currentTSC.QuadPart;
-
-	// Report required content
-	// Touch
-	raw_n = (responseLength - headerSize) / fingerprintSize;
-	if (raw_n >= PTP_MAX_CONTACT_POINTS) raw_n = PTP_MAX_CONTACT_POINTS;
-	ptpOutputReport.ContactCount = (UCHAR) raw_n;
-	for (size_t i = 0; i < raw_n; i++) {
-		PUCHAR f_base = responseBuffer + headerSize + deviceContext->InputFingerDelta;
-		f = (const TRACKPAD_FINGER*)(f_base + i * fingerprintSize);
-		f_type5 = (const TRACKPAD_FINGER_TYPE5*)f;
-		
-		USHORT tmp_x = (*((USHORT*)f_type5)) & 0x1fff;
-		unsigned int tmp_y = (INT)(*((unsigned int*) f_type5));
-
-		x = (SHORT)(tmp_x << 3) >> 3;
-		y = -(INT)(tmp_y << 6) >> 19;
-		x = (x - deviceContext->X.min) > 0 ? (x - deviceContext->X.min) : 0;
-		y = (y - deviceContext->Y.min) > 0 ? (y - deviceContext->Y.min) : 0;
-
-		ptpOutputReport.Contacts[i].ContactID = f_type5->OrientationAndOrigin.ContactIdentifier.Id;
-		ptpOutputReport.Contacts[i].X = (USHORT)x;
-		ptpOutputReport.Contacts[i].Y = (USHORT)y;
-		ptpOutputReport.Contacts[i].TipSwitch = ((signed short) (f_type5->TouchMajor) << 1) > 0;
-		// The Microsoft spec says reject any input larger than 25mm. This is not ideal
-		// for Magic Trackpad 2 - so we raised the threshold a bit higher.
-		// Or maybe I used the wrong unit? IDK
-		ptpOutputReport.Contacts[i].Confidence = ((signed short) (f_type5->TouchMinor) << 1) < 345 && ((signed short) (f_type5->TouchMinor) << 1) < 345;
-	}
-
-	// Button
-	if ((responseBuffer[deviceContext->InputButtonDelta] & 1) != 0) {
-		ptpOutputReport.IsButtonClicked = TRUE;
-	}
-
-	status = WdfRequestRetrieveOutputMemory(ptpRequest, &ptpRequestMemory);
-	if (!NT_SUCCESS(status))
-	{
-		TraceEvents(TRACE_LEVEL_ERROR, TRACE_INPUT, "%!FUNC! WdfRequestRetrieveOutputBuffer failed with %!STATUS!", status);
-		WdfDeviceSetFailed(deviceContext->Device, WdfDeviceFailedAttemptRestart);
-		goto cleanup;
-	}
-
-	status = WdfMemoryCopyFromBuffer(ptpRequestMemory, 0, (PVOID) &ptpOutputReport, sizeof(PTP_REPORT));
-	if (!NT_SUCCESS(status))
-	{
-		TraceEvents(TRACE_LEVEL_ERROR, TRACE_INPUT, "%!FUNC! WdfMemoryCopyFromBuffer failed with %!STATUS!", status);
-		WdfDeviceSetFailed(deviceContext->Device, WdfDeviceFailedAttemptRestart);
-		goto cleanup;
-	}
-
-	WdfRequestSetInformation(ptpRequest, sizeof(PTP_REPORT));
-	WdfRequestComplete(ptpRequest, status);
+    PWORKER_REQUEST_CONTEXT requestContext = (PWORKER_REQUEST_CONTEXT)Context;
+    PDEVICE_CONTEXT ctx = requestContext->DeviceContext;
+    WDFMEMORY rawMemory = requestContext->RequestMemory;
+    WDFREQUEST ptpRequest = NULL;
+    PTP_REPORT physical;
+    NTSTATUS status = Params->IoStatus.Status;
+    NTSTATUS outputStatus = STATUS_SUCCESS;
+    size_t capacity = 0, length;
+    PUCHAR buffer;
+    KIRQL oldIrql;
+    BOOLEAN continuePump = TRUE;
+    UNREFERENCED_PARAMETER(Target);
+    TraceLoggingWrite(g_PtpBluetoothTrace, "TransportReadComplete",
+        TraceLoggingNTStatus(status, "Status"),
+        TraceLoggingUInt64(WdfRequestGetInformation(Request), "Length"),
+        TraceLoggingBoolean(ctx->DeviceConfigured, "Configured"));
+    if (!NT_SUCCESS(status)) {
+        continuePump = FALSE;
+        // Power exit clears DeviceConfigured before cancelling reads. Errors
+        // while still configured, including a transient link loss, need retry.
+        if (ctx->DeviceConfigured) {
+            LONG failures = InterlockedIncrement(&ctx->ReadErrorCount);
+            if (failures >= 4) ctx->DeviceConfigured = FALSE;
+            TraceLoggingWrite(g_PtpBluetoothTrace, "ReadRecovery", TraceLoggingInt32(failures, "Failures"));
+            WdfTimerStart(ctx->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_MS(failures < 4 ? 20 : 500));
+        }
+        goto cleanup;
+    }
+    if (!ctx->DeviceConfigured) goto cleanup;
+    InterlockedExchange(&ctx->ReadErrorCount, 0);
+    length = (size_t)WdfRequestGetInformation(Request);
+    buffer = WdfMemoryGetBuffer(rawMemory, &capacity);
+    if (length == 0 || length > capacity || buffer == NULL) goto cleanup;
+    TraceLoggingWrite(g_PtpBluetoothTrace, "PhysicalPacket", TraceLoggingBinary(buffer, (ULONG)length, "Packet"));
+    if (buffer[0] != (ctx->VendorID == HID_VID_APPLE_BT ? 0x31 : 0x02)) {
+        // If firmware has returned to mouse mode, restore multitouch mode.
+        if (ctx->VendorID == HID_VID_APPLE_BT && buffer[0] == 0x02) {
+            ctx->DeviceConfigured = FALSE;
+            continuePump = FALSE;
+            WdfTimerStart(ctx->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_MS(100));
+        }
+        goto cleanup;
+    }
+    KeAcquireSpinLock(&ctx->InputLock, &oldIrql);
+    LARGE_INTEGER now = KeQueryPerformanceCounter(NULL);
+    if (!PtpFilterBuildType5Report(buffer, length, ctx->InputHeaderSize,
+        ctx->X.min, ctx->X.max, ctx->Y.min, ctx->Y.max, 0,
+        ctx->PtpReportTouch, ctx->PtpReportButton, &ctx->LastPhysicalReport, &physical)) {
+        TraceLoggingWrite(g_PtpBluetoothTrace, "MalformedPacket", TraceLoggingUInt32((ULONG)length, "Length"));
+        KeReleaseSpinLock(&ctx->InputLock, oldIrql);
+        goto cleanup;
+    }
+    LONGLONG sourceTime = PtpFilterSourceTime(&ctx->Resampling,
+        buffer + ctx->InputHeaderSize - 4, now.QuadPart, ctx->QpcFrequency);
+    BOOLEAN transition = PtpFilterResampleOnSample(&ctx->Resampling, &physical,
+        sourceTime, now.QuadPart, ctx->QpcFrequency);
+    ctx->LastPhysicalReport = physical;
+    if (transition) ptpRequest = PtpFilterPrepareDelivery(ctx, now.QuadPart, FALSE, &outputStatus);
+    KeReleaseSpinLock(&ctx->InputLock, oldIrql);
+    if (ptpRequest != NULL) WdfRequestComplete(ptpRequest, outputStatus);
 
 cleanup:
-	// Cleanup
-	WdfObjectDelete(Request);
-	if (requestContext->RequestMemory != NULL) {
-		WdfObjectDelete(requestContext->RequestMemory);
-	}
-
-	// We don't issue new request here (unless it's a spurious request - which is handled earlier) to
-	// keep the request pipe go through one-way.
+    PtpFilterClearTransportRead(ctx, Request);
+    WdfObjectDelete(Request);
+    if (rawMemory != NULL) WdfObjectDelete(rawMemory);
+    InterlockedExchange(&ctx->TransportReadActive, 0);
+    if (continuePump && ctx->DeviceConfigured) WdfWorkItemEnqueue(ctx->HidTransportRecoveryWorkItem);
 }

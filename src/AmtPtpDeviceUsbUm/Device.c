@@ -645,6 +645,7 @@ AmtPtpEvtDeviceD0Entry(
 	RtlZeroMemory(pDeviceContext->InterpFingers, sizeof(pDeviceContext->InterpFingers));
 	pDeviceContext->InterpButton = FALSE;
 	RtlZeroMemory(&pDeviceContext->LastDeliveredReport, sizeof(PTP_REPORT));
+	RtlZeroMemory(&pDeviceContext->LastPhysicalReport, sizeof(PTP_REPORT));
 	pDeviceContext->InterpTimerEmission = FALSE;
 
 	//

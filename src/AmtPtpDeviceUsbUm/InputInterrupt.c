@@ -2,6 +2,7 @@
 
 #include <driver.h>
 #include "InputInterrupt.tmh"
+#include "../AmtPtpHidFilter/include/Type5Input.h"
 
 //
 // Forward declarations for the resampling helpers used by the Type 5 handler.
@@ -265,11 +266,10 @@ AmtPtpServiceTouchInputInterrupt(
 )
 {
 	NTSTATUS Status;
-	WDFREQUEST Request;
+	WDFREQUEST Request = NULL;
 	WDFMEMORY  RequestMemory;
 	PTP_REPORT PtpReport;
 	LARGE_INTEGER CurrentPerfCounter;
-	LONGLONG PerfCounterDelta;
 
 	const struct TRACKPAD_FINGER *f;
 
@@ -285,6 +285,18 @@ AmtPtpServiceTouchInputInterrupt(
 	USHORT x = 0, y = 0;
 
 	Status = STATUS_SUCCESS;
+	// Reject incomplete packets before taking ownership of a pending HID read.
+	if (DeviceContext->IsSurfaceReportOn &&
+		(NumBytesTransferred < headerSize ||
+		 fingerprintSize < (size_t)DeviceContext->DeviceInfo->tp_delta + sizeof(*f) ||
+		 (NumBytesTransferred - headerSize) % fingerprintSize != 0)) {
+		return STATUS_INVALID_BUFFER_SIZE;
+	}
+	if (DeviceContext->IsButtonReportOn &&
+		NumBytesTransferred <= (size_t)DeviceContext->DeviceInfo->tp_button) {
+		return STATUS_INVALID_BUFFER_SIZE;
+	}
+	RtlZeroMemory(&PtpReport, sizeof(PtpReport));
 	PtpReport.ReportID = REPORTID_MULTITOUCH;
 	PtpReport.IsButtonClicked = 0;
 
@@ -307,16 +319,8 @@ AmtPtpServiceTouchInputInterrupt(
 		&CurrentPerfCounter
 	);
 
-	// Scan time is in 100us
-	PerfCounterDelta = (CurrentPerfCounter.QuadPart - DeviceContext->PerfCounter.QuadPart) * 10000 / DeviceContext->QpcFrequency;
-	DeviceContext->PerfCounter = CurrentPerfCounter;
-	// Only two bytes allocated
-	if (PerfCounterDelta > 0xFF)
-	{
-		PerfCounterDelta = 0xFF;
-	}
-
-	PtpReport.ScanTime = (USHORT) PerfCounterDelta;
+	// Use the same advancing 100us counter as Type 5, including 16-bit wrap.
+	AmtPtpSetScanTime(DeviceContext, &PtpReport, CurrentPerfCounter.QuadPart);
 
 	// Allocate output memory.
 	Status = WdfRequestRetrieveOutputMemory(
@@ -421,13 +425,11 @@ AmtPtpServiceTouchInputInterrupt(
 		sizeof(PTP_REPORT)
 	);
 
-	// Set completion flag
-	WdfRequestComplete(
-		Request,
-		Status
-	);
-
 exit:
+	// Every dequeued request must complete, including output-buffer failures.
+	if (Request != NULL) {
+		WdfRequestComplete(Request, Status);
+	}
 	TraceEvents(
 		TRACE_LEVEL_INFORMATION,
 		TRACE_DRIVER,
@@ -448,66 +450,27 @@ AmtPtpServiceTouchInputInterruptType5(
 	PTP_REPORT PtpReport;
 	LARGE_INTEGER CurrentPerfCounter;
 
-	const struct TRACKPAD_FINGER *f;
-	const struct TRACKPAD_FINGER_TYPE5 *f_type5;
-
 	TraceEvents(
 		TRACE_LEVEL_INFORMATION,
 		TRACE_DRIVER,
 		"%!FUNC! Entry"
 	);
 
-	RtlZeroMemory(&PtpReport, sizeof(PTP_REPORT));
-	PtpReport.ReportID = REPORTID_MULTITOUCH;
-	PtpReport.IsButtonClicked = 0;
-
-	INT x, y = 0;
-	size_t raw_n, i = 0;
-	size_t headerSize = (unsigned int) DeviceContext->DeviceInfo->tp_header;
-	size_t fingerprintSize = (unsigned int) DeviceContext->DeviceInfo->tp_fsize;
-
-	// Type 5 finger report
-	if (DeviceContext->IsSurfaceReportOn) {
-		raw_n = (NumBytesTransferred - headerSize) / fingerprintSize;
-		if (raw_n >= PTP_MAX_CONTACT_POINTS) raw_n = PTP_MAX_CONTACT_POINTS;
-		PtpReport.ContactCount = (UCHAR)raw_n;
-
-		// Fingers to array
-		for (i = 0; i < raw_n; i++) {
-			UCHAR *f_base = Buffer + headerSize + DeviceContext->DeviceInfo->tp_delta;
-			f = (const struct TRACKPAD_FINGER*) (f_base + i * fingerprintSize);
-			f_type5 = (const struct TRACKPAD_FINGER_TYPE5*) f;
-
-			USHORT tmp_x = (*((USHORT*)f_type5)) & 0x1fff;
-			UINT tmp_y = (INT)(*((UINT*)f_type5));
-
-			x = (SHORT) (tmp_x << 3) >> 3;
-			y = -((INT) (tmp_y << 6) >> 19);
-
-			x = (x - DeviceContext->DeviceInfo->x.min) > 0 ? (x - DeviceContext->DeviceInfo->x.min) : 0;
-			y = (y - DeviceContext->DeviceInfo->y.min) > 0 ? (y - DeviceContext->DeviceInfo->y.min) : 0;
-
-			PtpReport.Contacts[i].ContactID = f_type5->ContactIdentifier.Id;
-			PtpReport.Contacts[i].X = (USHORT) x;
-			PtpReport.Contacts[i].Y = (USHORT) y;
-			// Use the dedicated touch-state bits (high two bits of AbsoluteY[1]):
-			// state == 0x80 means the finger is in contact.
-			PtpReport.Contacts[i].TipSwitch = ((f_type5->AbsoluteY[1] & 0xC0) == 0x80);
-			PtpReport.Contacts[i].Confidence = TRUE;
-		}
-	}
-
-	// Button
-	if (DeviceContext->IsButtonReportOn) {
-		if (Buffer[DeviceContext->DeviceInfo->tp_button]) {
-			PtpReport.IsButtonClicked = TRUE;
-		}
-	}
-
-	// Store the raw sample (position + instantaneous velocity) and emit the raw
-	// position immediately. The periodic timer resamples with linear
-	// extrapolation between physical samples (125 Hz).
 	AcquireSRWLockExclusive(&DeviceContext->InterpolationLock);
+	// Use the Bluetooth decoder too: button bit, bounds, contact capacity and
+	// release ordering must not change when the cable is plugged in.
+	if (!PtpFilterBuildType5Report(Buffer, NumBytesTransferred,
+		(size_t)DeviceContext->DeviceInfo->tp_header,
+		DeviceContext->DeviceInfo->x.min, DeviceContext->DeviceInfo->x.max,
+		DeviceContext->DeviceInfo->y.min, DeviceContext->DeviceInfo->y.max, 0,
+		(BOOLEAN)(DeviceContext->IsSurfaceReportOn != FALSE),
+		(BOOLEAN)(DeviceContext->IsButtonReportOn != FALSE),
+		&DeviceContext->LastPhysicalReport, &PtpReport)) {
+		ReleaseSRWLockExclusive(&DeviceContext->InterpolationLock);
+		return STATUS_INVALID_BUFFER_SIZE;
+	}
+	DeviceContext->LastPhysicalReport = PtpReport;
+	// Continuous movement stays on the timer; transitions are delivered now.
 	QueryPerformanceCounter(&CurrentPerfCounter);
 	BOOLEAN transition = AmtPtpInterpOnSample(DeviceContext, &PtpReport, CurrentPerfCounter);
 	TraceLoggingWrite(g_hAmtPtpDeviceTraceProvider, "PhysicalInput",
@@ -591,7 +554,7 @@ AmtPtpInterpOnSample(
 		}
 		finger = &DeviceContext->InterpFingers[id];
 
-		if (finger->Active && finger->TipSwitch && c->TipSwitch) {
+		if (finger->Active && finger->TipSwitch && c->TipSwitch && dtSec < 0.2) {
 			double a = AmtPtpInterpAlpha(INTERP_DCUTOFF, dtSec);
 			double dx = ((double)c->X - finger->X) / dtSec;
 			double dy = ((double)c->Y - finger->Y) / dtSec;
@@ -747,8 +710,8 @@ AmtPtpSetScanTime(
 	}
 
 	// HID ScanTime is an advancing 16-bit counter; LastEmitTime only gates ticks.
-	delta = (NowQpc - DeviceContext->PerfCounter.QuadPart) * 10000 / DeviceContext->QpcFrequency;
-	if (delta < 0) delta = 0;
+	delta = PtpFilterScanTicks(NowQpc - DeviceContext->PerfCounter.QuadPart,
+		DeviceContext->QpcFrequency, -1);
 	Report->ScanTime = (USHORT)delta;
 }
 

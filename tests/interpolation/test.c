@@ -1,4 +1,5 @@
 #include <driver.h>
+#include "../../src/AmtPtpHidFilter/include/Type5Input.h"
 #define TraceLoggingWrite(...) ((void)0)
 void WdfRequestComplete(WDFREQUEST request, NTSTATUS status);
 void WdfRequestSetInformation(WDFREQUEST request, ULONG_PTR bytes);

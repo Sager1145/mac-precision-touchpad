@@ -1,6 +1,7 @@
 // Device.h: Device-specific struct and routines
 
 #pragma once
+#include "ResamplingTypes.h"
 
 EXTERN_C_START
 
@@ -14,6 +15,7 @@ DEFINE_GUID(GUID_DEVICEINTERFACE_AmtPtpHidFilter,
 #define HID_VID_APPLE_USB 0x05ac
 #define HID_VID_APPLE_BT  0x004c
 #define HID_PID_MAGIC_TRACKPAD_2 0x0265
+#define HID_PID_MAGIC_TRACKPAD_3 0x0324
 
 /* device-specific parameters */
 typedef struct _BCM5974_PARAM {
@@ -54,6 +56,17 @@ typedef struct _DEVICE_CONTEXT
 
     // PTP report specific
     LARGE_INTEGER   LastReportTime;
+    LONGLONG        QpcFrequency;
+    LONGLONG        LastScanTicks;
+    KSPIN_LOCK      InputLock;
+    PTP_REPORT      LastDeliveredReport;
+    volatile LONG  ReadErrorCount;
+    volatile LONG  TransportReadActive;
+    WDFREQUEST     TransportRequest;
+    WDFTIMER       ResamplingTimer;
+    LONGLONG       LastEmitTime;
+    PTP_REPORT     LastPhysicalReport;
+    PTP_RESAMPLE_STATE Resampling;
     BOOLEAN         PtpInputOn;
     BOOLEAN         PtpReportTouch;
     BOOLEAN         PtpReportButton;

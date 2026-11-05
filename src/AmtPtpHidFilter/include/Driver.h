@@ -8,6 +8,9 @@
 #include <wdfusb.h>
 #include <initguid.h>
 #include <hidport.h>
+#include <TraceLoggingProvider.h>
+
+TRACELOGGING_DECLARE_PROVIDER(g_PtpBluetoothTrace);
 
 #include "Trace.h"
 
@@ -19,12 +22,12 @@ EVT_WDF_DRIVER_DEVICE_ADD PtpFilterEvtDeviceAdd;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP PtpFilterEvtDriverContextCleanup;
 
 // Device specific routines
+#include "HidMiniport.h"
 #include "Device.h"
 #include "Queue.h"
 #include "Hac.h"
 #include "Diagnostics.h"
 #include "Metadata/StaticHidRegistry.h"
-#include "HidMiniport.h"
 #include "HidDevice.h"
 #include "Input.h"
 

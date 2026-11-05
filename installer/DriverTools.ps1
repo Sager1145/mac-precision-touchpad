@@ -1,0 +1,132 @@
+# Shared by the elevated installer entry point and its regression harness.
+Set-StrictMode -Version Latest
+$script:CertificateThumbprint = '94A13BEE28D788FC4A7FA91C568968C7DBADDC69'
+
+function Assert-Payload([string]$Payload) {
+    $manifest = Get-Content -LiteralPath (Join-Path $Payload 'manifest.json') -Raw | ConvertFrom-Json
+    foreach ($file in $manifest.Files) {
+        if ($file.Name -notmatch '^[a-zA-Z0-9_.-]+$') { throw 'Invalid payload filename.' }
+        $path = Join-Path $Payload $file.Name
+        if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $file.SHA256) {
+            throw "Payload integrity check failed: $($file.Name)"
+        }
+    }
+    foreach ($required in @('AmtPtpDevice.inf','amtptpdevice.cat','AmtPtpDeviceUsbUm.dll',
+        'AmtPtpHidFilter.sys','AmtPtpDeviceUsbKm.sys','AmtPtpDeviceSpiKm.sys','AmtPtpDeviceTest.cer')) {
+        if ($required -notin $manifest.Files.Name) { throw "Required payload missing: $required" }
+    }
+    $certificate = New-Object Security.Cryptography.X509Certificates.X509Certificate2(
+        (Join-Path $Payload 'AmtPtpDeviceTest.cer'))
+    if ($certificate.Thumbprint -ne $script:CertificateThumbprint) { throw 'Unexpected signing certificate.' }
+    return $manifest
+}
+
+function Assert-TestSigning {
+    # Microsoft SYSTEM_CODEINTEGRITY_INFORMATION, class 103, TESTSIGN bit 0x02.
+    if (-not ('TouchpadInstaller.CodeIntegrity' -as [type])) {
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+namespace TouchpadInstaller {
+ public static class CodeIntegrity {
+  [StructLayout(LayoutKind.Sequential)] public struct Information { public uint Length, Options; }
+  [DllImport("ntdll.dll")] private static extern int NtQuerySystemInformation(
+      int kind, ref Information info, uint length, out uint returned);
+  public static uint Options() {
+   Information info = new Information(); info.Length = 8; uint returned;
+   int status = NtQuerySystemInformation(103, ref info, 8, out returned);
+   if (status < 0) throw new InvalidOperationException("Unable to read Code Integrity status: " + status);
+   return info.Options;
+  }
+ }
+}
+'@
+    }
+    if (([TouchpadInstaller.CodeIntegrity]::Options() -band 2) -eq 0) {
+        throw 'Windows is not currently allowing test-signed drivers. See the bundled installation guide, enable test signing yourself, reboot, then run Setup again. Setup does not change boot or Secure Boot settings.'
+    }
+}
+
+function Invoke-PnpUtil([string[]]$Arguments) {
+    $output = & "$env:WINDIR\System32\pnputil.exe" @Arguments 2>&1
+    $code = $LASTEXITCODE
+    $output | ForEach-Object { Write-Host $_ }
+    if ($code -notin @(0,259,3010)) { throw "PnPUtil failed with exit code $code. See the installer log." }
+    return $code
+}
+
+function Find-PublishedPackage([string]$Payload) {
+    $hash = (Get-FileHash -LiteralPath (Join-Path $Payload 'AmtPtpDevice.inf')).Hash
+    # Compare exact INF contents, independent of localized pnputil output.
+    return @(Get-ChildItem -LiteralPath "$env:WINDIR\INF" -Filter 'oem*.inf' | Where-Object {
+        (Get-FileHash -LiteralPath $_.FullName).Hash -eq $hash
+    } | ForEach-Object { [pscustomobject]@{Name=$_.Name; SHA256=$hash} })
+}
+
+function Install-Touchpad([string]$Payload, [string]$StateDirectory, [bool]$TrustCertificate) {
+    $manifest = Assert-Payload $Payload
+    Assert-TestSigning
+    $thumb = $script:CertificateThumbprint
+    $trusted = (Test-Path "Cert:\LocalMachine\Root\$thumb") -and
+        (Test-Path "Cert:\LocalMachine\TrustedPublisher\$thumb")
+    if (-not $trusted -and -not $TrustCertificate) {
+        throw 'The bundled test certificate is not trusted. Select the certificate trust task in Setup, or install its public certificate manually as described in the guide.'
+    }
+    if ($TrustCertificate) {
+        foreach ($store in @('Root','TrustedPublisher')) {
+            Import-Certificate -FilePath (Join-Path $Payload 'AmtPtpDeviceTest.cer') -CertStoreLocation "Cert:\LocalMachine\$store" | Out-Null
+        }
+    }
+    foreach ($file in @('amtptpdevice.cat','AmtPtpDeviceUsbUm.dll','AmtPtpHidFilter.sys',
+        'AmtPtpDeviceUsbKm.sys','AmtPtpDeviceSpiKm.sys')) {
+        $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $Payload $file)
+        if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -ne $thumb) {
+            throw "Invalid driver signature: $file"
+        }
+    }
+    $backup = Join-Path $StateDirectory ('backup-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss'))
+    New-Item -ItemType Directory -Force $backup | Out-Null
+    # Preserve any existing driver from this family before rebinding devices.
+    $previous = @(Get-WindowsDriver -Online -All | Where-Object {
+        [IO.Path]::GetFileName($_.OriginalFileName) -in @('amtptpdevice.inf','amtptphidfilter.inf')
+    })
+    foreach ($driver in $previous) { Invoke-PnpUtil @('/export-driver', $driver.Driver, $backup) | Out-Null }
+    $code = Invoke-PnpUtil @('/add-driver', (Join-Path $Payload 'AmtPtpDevice.inf'), '/install')
+    $published = @(Find-PublishedPackage $Payload)
+    if (-not $published.Count) { throw 'The signed driver package was not found in the Windows driver store after installation.' }
+    $statePath = Join-Path $StateDirectory 'installed.json'
+    $owned = @($published)
+    if (Test-Path -LiteralPath $statePath) {
+        $old = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        $owned += @($old.Packages | Where-Object { $_.Name -notin $published.Name })
+    }
+    [pscustomobject]@{Version=$manifest.Version; Packages=$owned; Backup=$backup; RebootRequired=($code -eq 3010)} |
+        ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $statePath -Encoding UTF8
+    Write-Host "Driver staged/installed. Reconnect an unplugged trackpad to bind the update. Previous drivers: $backup"
+    return $code
+}
+
+function Uninstall-Touchpad([string]$StateDirectory) {
+    $path = Join-Path $StateDirectory 'installed.json'
+    if (-not (Test-Path -LiteralPath $path)) { throw 'Installation ownership record missing; no drivers were removed.' }
+    $state = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    # Validate every entry before deleting any package. Never remove by device
+    # vendor wildcard, never force-delete, and never touch another fork's INF.
+    foreach ($package in $state.Packages) {
+        if ($package.Name -notmatch '^oem[0-9]+\.inf$') { throw 'Invalid published INF in ownership record.' }
+        $inf = Join-Path "$env:WINDIR\INF" $package.Name
+        if ((Test-Path -LiteralPath $inf) -and (Get-FileHash -LiteralPath $inf).Hash -ne $package.SHA256) {
+            throw "Driver ownership changed: $($package.Name). No drivers were removed."
+        }
+    }
+    $reboot = 0
+    foreach ($package in $state.Packages) {
+        if (Test-Path -LiteralPath (Join-Path "$env:WINDIR\INF" $package.Name)) {
+            $code = Invoke-PnpUtil @('/delete-driver', $package.Name, '/uninstall')
+            if ($code -eq 3010) { $reboot = 3010 }
+        }
+    }
+    Remove-Item -LiteralPath $path
+    # Keep backups, logs and shared test-certificate trust intact for recovery.
+    return $reboot
+}
