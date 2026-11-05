@@ -85,9 +85,9 @@ AmtPtpHidFilter.sys   = 1,,
 
 ; Magic Trackpad 2 USB
 ; Note: this will be a last few versions where Magic Trackpad 2 uses this old implementation
-%AmtPtpDeviceUsbUm.DeviceDesc%=AmtPtpDeviceUsbUm_Install, USB\Vid_05ac&Pid_0265&MI_01
+%AmtPtpDeviceUsbUm.DeviceDesc%=AmtPtpDeviceUsbUm_Magic, USB\Vid_05ac&Pid_0265&MI_01
 ; Magic Trackpad 3 (USB-C, 2024)
-%AmtPtpDeviceUsbUm.DeviceDesc%=AmtPtpDeviceUsbUm_Install, USB\Vid_05ac&Pid_0324&MI_01
+%AmtPtpDeviceUsbUm.DeviceDesc%=AmtPtpDeviceUsbUm_Magic, USB\Vid_05ac&Pid_0324&MI_01
 ; Magic Trackpad 3 (USB-C) interface 0 has an invalid HID report descriptor
 ; (hidusb fails to start with Code 10). Bind a null device so it is ignored.
 %AmtPtpHidFilter.NullDeviceDesc%=AmtPtpHidFilter_NullDevice, USB\Vid_05ac&Pid_0324&MI_00
@@ -124,9 +124,19 @@ StartType      = 3                  ; SERVICE_DEMAND_START
 ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
 ServiceBinary  = %10%\System32\Drivers\mshidkmdf.sys
 
+; Standalone Magic Trackpads are their own device container. Without this,
+; Windows guesses the container category from the Bluetooth Class of Device
+; ("pointing device") and Settings shows a mouse. Container metadata is
+; applied on Windows 11 24H2 (26100.3323) and later and ignored before that.
+; Only external trackpads use it: MacBook trackpads share the computer's
+; container, which must keep its own category.
+[AmtPtp_TouchpadContainer]
+ContainerCategories,,,,Input.Digitizer.Touchpad
+
 ; PTP filter
 [AmtPtpHidFilter_MiniPortDevice.NT]
 CopyFiles=FilterDriver_Payload
+AddProperty=AmtPtp_TouchpadContainer
 
 [AmtPtpHidFilter_MiniPortDevice.NT.Services]
 AddService = AmtPtpHidFilter,, AmtPtpHidFilter_Service_Inst
@@ -193,6 +203,29 @@ AddService=mshidumdf, 0x000001fa, MSHIDUMDF_ServiceInstall ; flag 0x2 sets this 
 AddService=WUDFRd,0x000001f8,WUDFRD_ServiceInstall         ; this service is installed because its a filter.
 
 [AmtPtpDeviceUsbUm_Install.NT.Wdf]
+UmdfDispatcher=NativeUSB
+UmdfService=AmtPtpDeviceUsbUm,AmtPtpDeviceUsbUm_Install
+UmdfServiceOrder=AmtPtpDeviceUsbUm
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+UmdfFileObjectPolicy=AllowNullAndUnknownFileObjects
+UmdfMethodNeitherAction=Copy
+UmdfFsContextUsePolicy=CanUseFsContext2
+UmdfHostPriority=PriorityHigh
+
+; USB UM for external Magic Trackpads: the same install plus the touchpad
+; container category. Built-in trackpads keep using AmtPtpDeviceUsbUm_Install.
+[AmtPtpDeviceUsbUm_Magic.NT]
+CopyFiles=PtpUmDrivers_Dir
+AddProperty=AmtPtp_TouchpadContainer
+
+[AmtPtpDeviceUsbUm_Magic.NT.hw]
+AddReg=AmtPtpDeviceUsbUm_AddReg
+
+[AmtPtpDeviceUsbUm_Magic.NT.Services]
+AddService=mshidumdf, 0x000001fa, MSHIDUMDF_ServiceInstall
+AddService=WUDFRd,0x000001f8,WUDFRD_ServiceInstall
+
+[AmtPtpDeviceUsbUm_Magic.NT.Wdf]
 UmdfDispatcher=NativeUSB
 UmdfService=AmtPtpDeviceUsbUm,AmtPtpDeviceUsbUm_Install
 UmdfServiceOrder=AmtPtpDeviceUsbUm

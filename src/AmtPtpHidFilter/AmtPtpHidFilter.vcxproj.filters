@@ -36,6 +36,9 @@
     <ClCompile Include="Queue.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Battery.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Detour.c">
       <Filter>Source Files</Filter>
     </ClCompile>

@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '0.2.1',
+    [string]$Version = '0.2.2',
     [string]$InnoCompiler = "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
     [string]$SignTool = 'D:\Program Files\Windows Kits\10\bin\10.0.28000.0\x64\signtool.exe',
     [string]$OutputDirectory
@@ -55,6 +55,17 @@ foreach ($architecture in @('x64','arm64')) {
         & $SignTool verify /q /pa /c (Join-Path $payload 'amtptphidfilter.cat') (Join-Path $payload $file)
         if ($LASTEXITCODE -ne 0) { throw "$architecture standalone catalog verification failed: $file" }
     }
+    # The battery service is an ordinary program, not part of the driver
+    # catalog, so it is signed on its own.
+    $service = 'AmtPtpBatteryService.exe'
+    $serviceBuilt = Join-Path $root "build\AmtPtpBatteryService\$architecture\Release\$service"
+    Assert-Machine $serviceBuilt $machine
+    Copy-Item -LiteralPath $serviceBuilt -Destination $payload -Force
+    & $SignTool sign /q /fd SHA256 /sha1 $thumbprint (Join-Path $payload $service)
+    if ($LASTEXITCODE -ne 0) { throw "$architecture service signing failed" }
+    $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $payload $service)
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -ne $thumbprint) { throw "Invalid $architecture signature: $service" }
+    $files += $service
     $entries = foreach ($file in ($files + 'AmtPtpDeviceTest.cer')) {
         [pscustomobject]@{Name=$file; SHA256=(Get-FileHash -LiteralPath (Join-Path $payload $file)).Hash}
     }

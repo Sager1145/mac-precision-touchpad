@@ -64,7 +64,8 @@ function Assert-Payload([string]$Payload) {
         }
     }
     foreach ($required in @('AmtPtpDevice.inf','amtptpdevice.cat','AmtPtpDeviceUsbUm.dll',
-        'AmtPtpHidFilter.sys','AmtPtpDeviceUsbKm.sys','AmtPtpDeviceSpiKm.sys','AmtPtpDeviceTest.cer')) {
+        'AmtPtpHidFilter.sys','AmtPtpDeviceUsbKm.sys','AmtPtpDeviceSpiKm.sys','AmtPtpBatteryService.exe',
+        'AmtPtpDeviceTest.cer')) {
         if ($required -notin $manifest.Files.Name) { throw "Required payload missing: $required" }
     }
     $certificate = New-Object Security.Cryptography.X509Certificates.X509Certificate2(
@@ -216,7 +217,7 @@ function Install-Touchpad([string]$Payload, [string]$StateDirectory, [bool]$Trus
     }
     try {
         foreach ($file in @('amtptpdevice.cat','AmtPtpDeviceUsbUm.dll','AmtPtpHidFilter.sys',
-            'AmtPtpDeviceUsbKm.sys','AmtPtpDeviceSpiKm.sys')) {
+            'AmtPtpDeviceUsbKm.sys','AmtPtpDeviceSpiKm.sys','AmtPtpBatteryService.exe')) {
             $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $Payload $file)
             if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -ne $thumb) {
                 throw "Invalid driver signature: $file"
@@ -252,12 +253,56 @@ function Install-Touchpad([string]$Payload, [string]$StateDirectory, [bool]$Trus
         }
     }
     if (-not $published.Count) { throw 'The signed driver package was not found in the Windows driver store after installation.' }
+    try { Install-BatteryService $Payload }
+    catch {
+        # Battery display is optional; never fail the driver install over it.
+        Write-Host "Battery service was not installed: $($_.Exception.Message)"
+    }
     Write-Host "Driver staged/installed. Reconnect an unplugged trackpad to bind the update. Previous drivers: $backup"
     if ($code -eq 3010) { return 3010 }
     return 0
 }
 
+$script:BatteryServiceName = 'AmtPtpBattery'
+
+function Install-BatteryService([string]$Payload) {
+    # The service publishes the Bluetooth battery level for Windows Settings.
+    # Writing a device property needs administrator rights, so it runs as
+    # LocalSystem, from the protected Program Files payload folder.
+    $exe = Join-Path $Payload 'AmtPtpBatteryService.exe'
+    $name = $script:BatteryServiceName
+    $sc = "$env:WINDIR\System32\sc.exe"
+    $ErrorActionPreference = 'Stop'
+    $existing = Get-Service -Name $name -ErrorAction SilentlyContinue
+    if ($existing) {
+        if ($existing.Status -ne 'Stopped') { Stop-Service -Name $name -Force }
+        # The binary path is fixed, but keep it exact after an upgrade.
+        Set-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$name" -Name ImagePath -Value "`"$exe`""
+        Set-Service -Name $name -StartupType Automatic
+    } else {
+        New-Service -Name $name -BinaryPathName "`"$exe`"" -DisplayName 'Mac Precision Touchpad battery level' `
+            -Description 'Shows the Magic Trackpad Bluetooth battery level in Windows Settings.' -StartupType Automatic | Out-Null
+    }
+    # Keep only the privilege every service needs. Administrator group
+    # membership is what allows the device property write.
+    & $sc privs $name SeChangeNotifyPrivilege | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc privs failed with exit code $LASTEXITCODE" }
+    & $sc failure $name reset= 86400 actions= restart/60000/restart/60000// | Out-Null
+    Start-Service -Name $name
+}
+
+function Remove-BatteryService {
+    $name = $script:BatteryServiceName
+    $existing = Get-Service -Name $name -ErrorAction SilentlyContinue
+    if (-not $existing) { return }
+    if ($existing.Status -ne 'Stopped') { Stop-Service -Name $name -Force -ErrorAction SilentlyContinue }
+    & "$env:WINDIR\System32\sc.exe" delete $name | Out-Null
+}
+
 function Uninstall-Touchpad([string]$StateDirectory) {
+    # The service is ours by name and runs from this app's folder, so remove
+    # it whether or not an ownership record exists.
+    Remove-BatteryService
     $path = Join-Path $StateDirectory 'installed.json'
     if (-not (Test-Path -LiteralPath $path)) {
         # Nothing is recorded as ours, so there is nothing to remove. Do not

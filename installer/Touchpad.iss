@@ -2,13 +2,13 @@
   #error PackageRoot must point to the prepared release directory
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.2.1"
+  #define AppVersion "0.2.2"
 #endif
 [Setup]
 AppId={{B9DA7434-8AF2-4F63-84D8-179566B48BD5}
 AppName=Mac Precision Touchpad (Sager1145)
 AppVersion={#AppVersion}
-VersionInfoVersion=0.2.1.0
+VersionInfoVersion=0.2.2.0
 AppPublisher=Sager1145
 AppPublisherURL=https://github.com/Sager1145/mac-precision-touchpad
 AppSupportURL=https://github.com/Sager1145/mac-precision-touchpad/issues
@@ -96,6 +96,10 @@ var
 begin
   if IsArm64 then Architecture := 'arm64' else Architecture := 'x64';
   Log('Selected native driver architecture: ' + Architecture);
+  // An upgrade replaces the battery service binary, which is locked while the
+  // service runs. net stop waits until it has stopped; it fails harmlessly
+  // when the service is absent.
+  Exec(ExpandConstant('{sys}\net.exe'), 'stop AmtPtpBattery', '', SW_HIDE, ewWaitUntilTerminated, Code);
   ExtractTemporaryFiles('{tmp}\*.ps1');
   ExtractTemporaryFiles('{tmp}\' + Architecture + '\*');
   if not RunDriverTool('Validate', ExpandConstant('{tmp}\Manage-Driver.ps1'),

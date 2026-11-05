@@ -277,8 +277,13 @@ PtpFilterInputRequestCompletionCallback(
         TraceLoggingLevel(PTP_TRACE_LEVEL_VERBOSE), TraceLoggingKeyword(PTP_TRACE_KEYWORD_INPUT),
         TraceLoggingBinary(buffer, (ULONG)length, "Packet"));
     if (buffer[0] != (ctx->VendorID == HID_VID_APPLE_BT ? 0x31 : 0x02)) {
+        UCHAR batteryLevel;
+        // The trackpad also sends its battery report unprompted while charging.
+        if (ctx->VendorID == HID_VID_APPLE_BT && PtpFilterBatteryParse(buffer, length, &batteryLevel)) {
+            PtpFilterBatteryRecord(ctx, batteryLevel);
+        }
         // If firmware has returned to mouse mode, restore multitouch mode.
-        if (ctx->VendorID == HID_VID_APPLE_BT && buffer[0] == 0x02) {
+        else if (ctx->VendorID == HID_VID_APPLE_BT && buffer[0] == 0x02) {
             KeAcquireSpinLock(&ctx->InputLock, &oldIrql);
             ctx->DeviceConfigured = FALSE;
             continuePump = FALSE;

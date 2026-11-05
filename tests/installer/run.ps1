@@ -17,7 +17,7 @@ function Rejects([scriptblock]$Action, [string]$Message, [string]$Expected = '')
     Assert $rejected $Message
 }
 $required = @('AmtPtpDevice.inf','amtptpdevice.cat','AmtPtpDeviceUsbUm.dll',
-    'AmtPtpHidFilter.sys','AmtPtpDeviceUsbKm.sys','AmtPtpDeviceSpiKm.sys')
+    'AmtPtpHidFilter.sys','AmtPtpDeviceUsbKm.sys','AmtPtpDeviceSpiKm.sys','AmtPtpBatteryService.exe')
 foreach ($file in $required) { Set-Content -LiteralPath (Join-Path $payload $file) $file }
 Copy-Item -LiteralPath (Join-Path $root 'build\AmtPtpDeviceUniversalPkg\x64\Release\AmtPtpDeviceUniversalPkg.cer') `
     -Destination (Join-Path $payload 'AmtPtpDeviceTest.cer')
@@ -74,6 +74,14 @@ $script:certRemovals = 0
 $script:failAfterStaging = $false
 function Assert-TestSigning { }
 function Remove-TrustedCertificate { $script:certRemovals++ }
+$script:serviceInstalls = 0
+$script:serviceRemovals = 0
+$script:failService = $false
+function Install-BatteryService([string]$Payload) {
+    $script:serviceInstalls++
+    if ($script:failService) { throw 'Injected service failure' }
+}
+function Remove-BatteryService { $script:serviceRemovals++ }
 function Test-Path {
     param([Parameter(Position=0)][string]$Path,[string]$LiteralPath,[string]$PathType)
     $target = if ($LiteralPath) { $LiteralPath } else { $Path }
@@ -176,6 +184,17 @@ try {
     Uninstall-Touchpad $state | Out-Null
     Assert ($script:certRemovals -eq 0) 'Uninstall removed certificate trust it did not add'
     $script:calls.Clear()
+    $script:serviceRemovals = 0
     Assert ((Uninstall-Touchpad $state) -eq 0 -and $calls.Count -eq 0) 'Missing ownership record blocked uninstall or removed drivers'
-    Write-Host 'PASS: installer payload tamper/missing/path validation, explicit certificate consent, backup-before-install, exact ownership, preview record adoption, reused package names, uninstall failures and recovery records'
+    Assert ($script:serviceRemovals -eq 1) 'Uninstall without an ownership record left the battery service behind'
+
+    # The battery service is optional: its failure must not fail the driver install.
+    $serviceState = Join-Path $fixture 'service-state'
+    New-Item -ItemType Directory -Force $serviceState | Out-Null
+    $script:serviceInstalls = 0
+    $script:failService = $true
+    Assert ((Install-Touchpad $payload $serviceState $true) -eq 0) 'Battery service failure failed the driver install'
+    $script:failService = $false
+    Assert ($script:serviceInstalls -eq 1) 'Setup did not install the battery service'
+    Write-Host 'PASS: installer payload tamper/missing/path validation, explicit certificate consent, backup-before-install, exact ownership, preview record adoption, reused package names, battery service lifecycle, uninstall failures and recovery records'
 } finally { $env:WINDIR = $originalWindows; $env:ProgramData = $originalProgramData }

@@ -6,9 +6,9 @@ This fork focuses on **Magic Trackpad 3 USB-C over USB and Bluetooth**: smooth c
 
 ## Download and install
 
-**[Download v0.2.1](https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.2.1)** for Windows 10/11 x64 and ARM64.
+**[Download v0.2.2](https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.2.2)** for Windows 10/11 x64 and ARM64.
 
-Choose `mac-precision-touchpad-v0.2.1-setup.exe`. Setup selects the native x64 or ARM64 package automatically. It provides previous-driver backups, logs, upgrades and an Installed apps uninstall entry. SHA-256 checksums are available for every download.
+Choose `mac-precision-touchpad-v0.2.2-setup.exe`. Setup selects the native x64 or ARM64 package automatically. It provides previous-driver backups, logs, upgrades and an Installed apps uninstall entry. SHA-256 checksums are available for every download.
 
 **This release uses WDK test signing.** Prepare Windows to load test-signed drivers before running Setup. The installer checks the active policy and offers certificate trust as an optional task.
 
@@ -42,8 +42,12 @@ in the extracted directory. The repository also retains a prebuilt
 | Matching USB/Bluetooth feel | Confirmed by the user after direct comparison |
 | Bluetooth off/on reconnect | Two successful hardware test cycles |
 | Installer / uninstaller | Signed Windows wizard with package ownership checks |
+| Trackpad icon in Settings | Shown as a touchpad, not a mouse (Windows 11 24H2 and later); confirmed on Bluetooth |
+| Bluetooth battery level in Settings | Confirmed on Bluetooth, via the battery service |
 
-v0.2.1 was confirmed over USB and Bluetooth on x64 with a pre-release test build. A Bluetooth check after a reboot is still outstanding.
+v0.2.2 test builds were confirmed over USB and Bluetooth on x64, including the touchpad icon and battery level over Bluetooth. The USB icon and live ARM64 input are not yet checked.
+
+Windows only reads battery levels natively from Bluetooth LE devices and headsets. For this classic Bluetooth trackpad, Setup installs a small service, `AmtPtpBattery`. It asks the trackpad for its battery report through the standard Windows HID API every five minutes and when the trackpad connects, then stores the percentage where Settings › Bluetooth & devices reads it. It runs as LocalSystem with only the basic service privilege, because writing that value needs administrator rights. Uninstall removes it.
 
 Both transports use 125 Hz output, a 12 ms interpolation delay and measured-position history. Contact and button transitions are immediate. Lift-off is reported once at the last delivered position so Windows can preserve momentum. Prediction is bounded; there is no position low-pass filter that changes motion amplitude.
 
@@ -51,7 +55,7 @@ Bluetooth uses device timestamps to preserve buffered packet spacing and retries
 
 The Bluetooth filter reads raw reports from the Windows Bluetooth HID transport. HIDCLASS hides that transport's own handler, so the filter calls the handler directly for its own requests through a private kernel-only device. Unlike upstream and v0.2.0, it no longer rewrites the shared Bluetooth HID driver's dispatch table, so other Bluetooth keyboards and mice are unaffected. A reboot clears the old patch after upgrading from v0.2.0 or earlier.
 
-See [USB/Bluetooth parity](docs/transport-parity.md), [Bluetooth implementation and testing](docs/bluetooth-trackpad-3.md), the [v0.2.1 release notes](docs/release-v0.2.1.md) and the [unreleased v0.2.2 changes](docs/release-v0.2.2.md).
+See [USB/Bluetooth parity](docs/transport-parity.md), [Bluetooth implementation and testing](docs/bluetooth-trackpad-3.md), and the [v0.2.2 release notes](docs/release-v0.2.2.md).
 
 ## Device support
 
@@ -68,6 +72,7 @@ Legacy device lists and project history are preserved in the [upstream README sn
 - Uninstall through Windows Installed apps. Only packages recorded by this installer are removed, and certificate trust is removed only if Setup added it. Backups and logs remain for recovery.
 - Trusting the test certificate lets Windows trust anything signed with its key, not only this driver. See [what certificate trust allows](docs/installer.md#what-certificate-trust-allows) and how to remove it.
 - The standalone `AmtPtpHidFilter.inf` in the driver ZIPs is for Bluetooth only. USB trackpads use `AmtPtpDevice.inf`.
+- No battery level in Settings: check that the `AmtPtpBattery` service is running (`Get-Service AmtPtpBattery`) and the trackpad is connected over Bluetooth. The level is read every five minutes.
 
 Report the Windows build, trackpad model, connection type and reproduction steps in [Issues](https://github.com/Sager1145/mac-precision-touchpad/issues). Avoid posting Bluetooth addresses or other device identifiers unnecessarily.
 

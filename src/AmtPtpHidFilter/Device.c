@@ -101,6 +101,14 @@ PtpFilterCreateDevice(
     status = WdfTimerCreate(&timerConfig, &deviceAttributes, &deviceContext->ResamplingTimer);
     if (!NT_SUCCESS(status)) goto exit;
 
+    WDF_WORKITEM_CONFIG_INIT(&workitemConfig, PtpFilterBatteryWorkItem);
+    WDF_OBJECT_ATTRIBUTES_INIT(&deviceAttributes);
+    deviceAttributes.ParentObject = device;
+    status = WdfWorkItemCreate(&workitemConfig, &deviceAttributes, &deviceContext->BatteryWorkItem);
+    if (!NT_SUCCESS(status)) goto exit;
+    deviceContext->BatteryLevel = -1;
+    deviceContext->PublishedBatteryLevel = -1;
+
     deviceContext->VendorID = 0;
     deviceContext->ProductID = 0;
     deviceContext->VersionNumber = 0;
@@ -200,6 +208,7 @@ PtpFilterDeviceD0Exit(
     KeReleaseSpinLock(&deviceContext->InputLock, irql);
     WdfTimerStop(deviceContext->HidTransportRecoveryTimer, TRUE);
     WdfTimerStop(deviceContext->ResamplingTimer, TRUE);
+    WdfWorkItemFlush(deviceContext->BatteryWorkItem);
     // Only the worker submits reads. Flush it before cancelling a sent read.
     WdfWorkItemFlush(deviceContext->HidTransportRecoveryWorkItem);
     if (deviceContext->HidIoTarget != NULL) {

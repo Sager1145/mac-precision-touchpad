@@ -75,6 +75,11 @@ typedef struct _DEVICE_CONTEXT
     BOOLEAN         PtpInputOn;
     BOOLEAN         PtpReportTouch;
     BOOLEAN         PtpReportButton;
+
+    // Battery level for the Windows Bluetooth device list, -1 when unknown
+    WDFWORKITEM    BatteryWorkItem;
+    volatile LONG  BatteryLevel;
+    LONG           PublishedBatteryLevel;
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, PtpFilterGetContext)
@@ -118,6 +123,22 @@ PtpFilterConfigureMultiTouch(
 VOID
 PtpFilterRecoveryTimerCallback(
     WDFTIMER Timer
+);
+
+// Battery routines
+EVT_WDF_WORKITEM PtpFilterBatteryWorkItem;
+
+BOOLEAN
+PtpFilterBatteryParse(
+    _In_reads_bytes_(Length) PUCHAR Buffer,
+    _In_ size_t Length,
+    _Out_ PUCHAR Level
+);
+
+VOID
+PtpFilterBatteryRecord(
+    _In_ PDEVICE_CONTEXT Context,
+    _In_ UCHAR Level
 );
 
 EXTERN_C_END

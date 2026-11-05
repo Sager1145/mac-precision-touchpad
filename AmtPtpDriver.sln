@@ -24,6 +24,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AmtPtpDeviceUniversalPkg", 
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AmtPtpHidFilter", "src\AmtPtpHidFilter\AmtPtpHidFilter.vcxproj", "{EE63C42B-F401-4F55-ADBB-14C16BD3B18C}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AmtPtpBatteryService", "src\AmtPtpBatteryService\AmtPtpBatteryService.vcxproj", "{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|ARM64 = Debug|ARM64
@@ -124,6 +126,18 @@ Global
 		{EE63C42B-F401-4F55-ADBB-14C16BD3B18C}.ReleaseSigned|x64.ActiveCfg = ReleaseSigned|x64
 		{EE63C42B-F401-4F55-ADBB-14C16BD3B18C}.ReleaseSigned|x64.Build.0 = ReleaseSigned|x64
 		{EE63C42B-F401-4F55-ADBB-14C16BD3B18C}.ReleaseSigned|x64.Deploy.0 = ReleaseSigned|x64
+		{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10}.Debug|ARM64.ActiveCfg = Debug|ARM64
+		{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10}.Debug|ARM64.Build.0 = Debug|ARM64
+		{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10}.Debug|x64.ActiveCfg = Debug|x64
+		{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10}.Debug|x64.Build.0 = Debug|x64
+		{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10}.Release|ARM64.ActiveCfg = Release|ARM64
+		{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10}.Release|ARM64.Build.0 = Release|ARM64
+		{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10}.Release|x64.ActiveCfg = Release|x64
+		{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10}.Release|x64.Build.0 = Release|x64
+		{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10}.ReleaseSigned|ARM64.ActiveCfg = ReleaseSigned|ARM64
+		{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10}.ReleaseSigned|ARM64.Build.0 = ReleaseSigned|ARM64
+		{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10}.ReleaseSigned|x64.ActiveCfg = ReleaseSigned|x64
+		{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10}.ReleaseSigned|x64.Build.0 = ReleaseSigned|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -134,6 +148,7 @@ Global
 		{AB3E45E7-C524-47C1-9677-728BA2A19344} = {2557B86E-6ED8-495A-B9A5-BF80CD5C4DAC}
 		{7AB0A246-AA1C-433B-9E16-88956C51A565} = {2557B86E-6ED8-495A-B9A5-BF80CD5C4DAC}
 		{EE63C42B-F401-4F55-ADBB-14C16BD3B18C} = {2557B86E-6ED8-495A-B9A5-BF80CD5C4DAC}
+		{5D2B7C1E-3A4F-4E8B-9C61-2F7A8D4B6E10} = {2557B86E-6ED8-495A-B9A5-BF80CD5C4DAC}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {E8D62F4C-ADCF-4882-AA6B-CA7D97CB284B}

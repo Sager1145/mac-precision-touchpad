@@ -217,6 +217,7 @@
     <FilesToPackage Include="$(TargetPath)" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Battery.c" />
     <ClCompile Include="Detour.c" />
     <ClCompile Include="Device.c" />
     <ClCompile Include="Diagnostics.c" />

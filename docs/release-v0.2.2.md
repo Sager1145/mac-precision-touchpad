@@ -1,8 +1,31 @@
-# v0.2.2 (unreleased)
+# v0.2.2
 
-Fixes from a privacy and security review of v0.2.1. The x64 and ARM64 builds
-and regression suites pass. A 0.2.2 test build was confirmed on x64 with Magic
-Trackpad 3 over Bluetooth and USB, including the new Bluetooth start check.
+Magic Trackpad now appears in Windows Settings with a touchpad icon and its
+Bluetooth battery level. This release also fixes the findings of a privacy and
+security review of v0.2.1.
+
+The x64 and ARM64 builds and regression suites passed. Test builds were
+confirmed on x64 with Magic Trackpad 3 over Bluetooth and USB, including the
+new Bluetooth start check, the touchpad icon and the battery level over
+Bluetooth. The touchpad icon over USB and live ARM64 testing remain
+outstanding.
+
+## Settings: icon and battery
+
+- The driver package declares the trackpad's device container a touchpad
+  (`Input.Digitizer.Touchpad`), so Settings shows a trackpad instead of a
+  mouse. Windows applies this on Windows 11 24H2 (26100.3323) and later.
+  MacBook built-in trackpads are excluded, because they share the computer's
+  container.
+- Windows does not read battery levels from classic Bluetooth HID devices.
+  Setup now installs the `AmtPtpBattery` service. Every five minutes and when
+  the trackpad connects, it requests the trackpad's battery report through
+  the standard Windows HID API and stores the percentage where Settings ›
+  Bluetooth & devices reads it. It runs as LocalSystem with only the basic
+  service privilege, from Program Files. Uninstall removes it.
+- The Bluetooth filter also passes on battery reports the trackpad sends by
+  itself while charging. The filter never requests the report itself: a test
+  build that did crashed Windows inside HidBth.
 
 ## Installer
 
@@ -36,3 +59,7 @@ Trackpad 3 over Bluetooth and USB, including the new Bluetooth start check.
 
 - Signatures still use the WDK test certificate and carry no timestamp, and
   `SHA256SUMS.txt` is not separately signed.
+
+This release uses WDK test signing. Prepare Windows to load test-signed
+drivers and verify your download with `SHA256SUMS.txt`.
+[Installation and recovery guide](https://github.com/Sager1145/mac-precision-touchpad/blob/master/docs/installer.md).
