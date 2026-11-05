@@ -2,7 +2,7 @@
   #error PackageRoot must point to the prepared release directory
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.2.0-preview.2"
+  #define AppVersion "0.2.0"
 #endif
 [Setup]
 AppId={{B9DA7434-8AF2-4F63-84D8-179566B48BD5}
@@ -61,7 +61,7 @@ var
   Params: String;
 begin
   Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ScriptPath +
-    '" -Action ' + Action + ' -StateDirectory "' + ExpandConstant('{commonappdata}\Sager1145\MacPrecisionTouchpad') + '"';
+    '" -Action ' + Action;
   if Payload <> '' then Params := Params + ' -Payload "' + Payload + '"';
   if Trust then Params := Params + ' -TrustCertificate';
   Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params,
@@ -72,8 +72,8 @@ function FailureMessage: String;
 var
   Detail: AnsiString;
 begin
-  Result := 'Driver operation failed. Logs: ' + ExpandConstant('{commonappdata}\Sager1145\MacPrecisionTouchpad');
-  if LoadStringFromFile(ExpandConstant('{commonappdata}\Sager1145\MacPrecisionTouchpad\last-error.txt'), Detail) then
+  Result := 'Driver operation failed. Logs: ' + ExpandConstant('{autopf}\Mac Precision Touchpad State');
+  if LoadStringFromFile(ExpandConstant('{autopf}\Mac Precision Touchpad State\last-error.txt'), Detail) then
     Result := String(Detail) + #13#10 + Result;
 end;
 

@@ -166,7 +166,8 @@ AmtPtpRequestCompletionRoutine(
 	PWORKER_REQUEST_CONTEXT RequestContext;
 	PDEVICE_CONTEXT pDeviceContext;
 
-	LONG SpiRequestLength;
+	size_t SpiRequestLength, capacity;
+	WDFMEMORY RawMemory;
 	PSPI_TRACKPAD_PACKET pSpiTrackpadPacket;
 
 	WDFREQUEST PtpRequest;
@@ -181,6 +182,7 @@ AmtPtpRequestCompletionRoutine(
 	// Get context
 	RequestContext = (PWORKER_REQUEST_CONTEXT) Context;
 	pDeviceContext = RequestContext->DeviceContext;
+	RawMemory = RequestContext->RequestMemory;
 
 	// Read report and fulfill PTP request.
 	// If no report is found, just exit.
@@ -196,36 +198,28 @@ AmtPtpRequestCompletionRoutine(
 		goto cleanup;
 	}
 
-	SpiRequestLength = (LONG) WdfRequestGetInformation(SpiRequest);
-	pSpiTrackpadPacket = (PSPI_TRACKPAD_PACKET) WdfMemoryGetBuffer(Params->Parameters.Ioctl.Output.Buffer, NULL);
+	Status = Params->IoStatus.Status;
+	if (!NT_SUCCESS(Status)) goto exit;
 
-	// Safe measurement for buffer overrun and device state reset
-	if (SpiRequestLength < 46) {
-		TraceEvents(
-			TRACE_LEVEL_ERROR,
-			TRACE_DRIVER,
-			"%!FUNC! Input too small: %d < 46. Attempt to re-enable the device.",
-			SpiRequestLength
-		);
-
+	SpiRequestLength = WdfRequestGetInformation(SpiRequest);
+	pSpiTrackpadPacket = (PSPI_TRACKPAD_PACKET)WdfMemoryGetBuffer(RawMemory, &capacity);
+	const size_t headerSize = FIELD_OFFSET(SPI_TRACKPAD_PACKET, Fingers);
+	if (pSpiTrackpadPacket == NULL || SpiRequestLength > capacity ||
+		SpiRequestLength < headerSize ||
+		pSpiTrackpadPacket->NumOfFingers > SPI_TRACKPAD_MAX_FINGERS ||
+		pSpiTrackpadPacket->NumOfFingers > (SpiRequestLength - headerSize) / sizeof(SPI_TRACKPAD_FINGER)) {
 		Status = STATUS_DEVICE_DATA_ERROR;
 		goto exit;
 	}
 
-	// Get Counter
-	KeQueryPerformanceCounter(
-		&CurrentCounter
-	);
-
-	CounterDelta = (CurrentCounter.QuadPart - pDeviceContext->LastReportTime.QuadPart) / 100;
-	pDeviceContext->LastReportTime.QuadPart = CurrentCounter.QuadPart;
-
-	// Write report
+	CurrentCounter = KeQueryPerformanceCounter(NULL);
+	CounterDelta = CurrentCounter.QuadPart - pDeviceContext->LastReportTime.QuadPart;
+	RtlZeroMemory(&PtpReport, sizeof(PtpReport));
 	PtpReport.ReportID = REPORTID_MULTITOUCH;
-	PtpReport.ContactCount = pSpiTrackpadPacket->NumOfFingers;
-	PtpReport.IsButtonClicked = pSpiTrackpadPacket->ClickOccurred;
-
-	UINT8 AdjustedCount = (pSpiTrackpadPacket->NumOfFingers > 5) ? 5 : pSpiTrackpadPacket->NumOfFingers;
+	PtpReport.ScanTime = (USHORT)(CounterDelta * 10000 / pDeviceContext->QpcFrequency.QuadPart);
+	PtpReport.IsButtonClicked = pSpiTrackpadPacket->ClickOccurred & 1;
+	UINT8 AdjustedCount = min(pSpiTrackpadPacket->NumOfFingers, PTP_MAX_CONTACT_POINTS);
+	PtpReport.ContactCount = AdjustedCount;
 	for (UINT8 Count = 0; Count < AdjustedCount; Count++)
 	{
 		PtpReport.Contacts[Count].ContactID = Count;
@@ -252,15 +246,6 @@ AmtPtpRequestCompletionRoutine(
 			pSpiTrackpadPacket->Fingers[Count].X,
 			pSpiTrackpadPacket->Fingers[Count].Y
 		);
-	}
-
-	if (CounterDelta >= 0xFF)
-	{
-		PtpReport.ScanTime = 0xFF;
-	}
-	else
-	{
-		PtpReport.ScanTime = (USHORT) CounterDelta;
 	}
 
 	Status = WdfRequestRetrieveOutputMemory(
@@ -315,7 +300,7 @@ cleanup:
 	// Clean up
 	pSpiTrackpadPacket = NULL;
 	WdfObjectDelete(SpiRequest);
-	if (RequestContext->RequestMemory != NULL) {
-		WdfObjectDelete(RequestContext->RequestMemory);
+	if (RawMemory != NULL) {
+		WdfObjectDelete(RawMemory);
 	}
 }

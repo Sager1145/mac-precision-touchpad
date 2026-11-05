@@ -115,7 +115,7 @@ static void testDevice(const struct BCM5974_CONFIG *cfg) {
 }
 int main(void) {
     unsigned families = 0;
-    for (const struct BCM5974_CONFIG *cfg = Bcm5974ConfigTable; cfg->ansi; cfg++) {
+    for (const struct BCM5974_CONFIG *cfg = Bcm5974ConfigTable; cfg < Bcm5974ConfigTable + ARRAYSIZE(Bcm5974ConfigTable); cfg++) {
         if (cfg->tp_type >= TYPE2 && cfg->tp_type <= TYPE4) {
             testDevice(cfg);
             families |= 1u << cfg->tp_type;

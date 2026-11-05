@@ -74,7 +74,7 @@ AmtPtpGetDeviceConfig(
 	USHORT id = deviceInfo.idProduct;
 	const struct BCM5974_CONFIG *cfg;
 
-	for (cfg = Bcm5974ConfigTable; cfg->ansi; ++cfg) {
+	for (cfg = Bcm5974ConfigTable; cfg < Bcm5974ConfigTable + ARRAYSIZE(Bcm5974ConfigTable); ++cfg) {
 		if (cfg->ansi == id || cfg->iso == id || cfg->jis == id) {
 			return cfg;
 		}

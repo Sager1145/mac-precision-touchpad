@@ -339,7 +339,7 @@ AmtPtpEvtDeviceD0Entry(
 	pDeviceContext->DeviceStatus = D0ActiveAndUnconfigured;
 
 	// Set time
-	KeQueryPerformanceCounter(&pDeviceContext->LastReportTime);
+	pDeviceContext->LastReportTime = KeQueryPerformanceCounter(&pDeviceContext->QpcFrequency);
 
 	TraceEvents(
 		TRACE_LEVEL_INFORMATION,
@@ -418,7 +418,7 @@ AmtPtpEvtDeviceSelfManagedIoInitOrRestart(
 	{
 		// Set time and status
 		pDeviceContext->DeviceStatus = D0ActiveAndConfigured;
-		KeQueryPerformanceCounter(&pDeviceContext->LastReportTime);
+		pDeviceContext->LastReportTime = KeQueryPerformanceCounter(&pDeviceContext->QpcFrequency);
 	}
 
 exit:

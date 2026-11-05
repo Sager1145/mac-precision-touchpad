@@ -299,6 +299,14 @@ PtpFilterSetHidFeatures(
 	{
 		TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_HID, "%!FUNC! Report REPORTID_REPORTMODE is requested");
 
+		if (hidPacket->reportBuffer == NULL || hidPacket->reportBufferLen < sizeof(PTP_DEVICE_INPUT_MODE_REPORT)) {
+
+			status = STATUS_BUFFER_TOO_SMALL;
+
+			goto exit;
+
+		}
+
 		PPTP_DEVICE_INPUT_MODE_REPORT DeviceInputMode = (PPTP_DEVICE_INPUT_MODE_REPORT)hidPacket->reportBuffer;
 		switch (DeviceInputMode->Mode)
 		{
@@ -323,6 +331,14 @@ PtpFilterSetHidFeatures(
 	case REPORTID_FUNCSWITCH:
 	{
 		TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_HID, "%!FUNC! Report REPORTID_FUNCSWITCH is requested");
+
+		if (hidPacket->reportBuffer == NULL || hidPacket->reportBufferLen < sizeof(PTP_DEVICE_SELECTIVE_REPORT_MODE_REPORT)) {
+
+			status = STATUS_BUFFER_TOO_SMALL;
+
+			goto exit;
+
+		}
 
 		PPTP_DEVICE_SELECTIVE_REPORT_MODE_REPORT InputSelection = (PPTP_DEVICE_SELECTIVE_REPORT_MODE_REPORT)hidPacket->reportBuffer;
 		deviceContext->PtpReportButton = InputSelection->ButtonReport;

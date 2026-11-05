@@ -5,30 +5,6 @@
 #include "Type5Input.h"
 #include "Type5Resampling.h"
 
-static VOID
-PtpFilterClearTransportRead(PDEVICE_CONTEXT Ctx, WDFREQUEST Request)
-{
-    KIRQL irql;
-    KeAcquireSpinLock(&Ctx->InputLock, &irql);
-    if (Ctx->TransportRequest == Request) Ctx->TransportRequest = NULL;
-    KeReleaseSpinLock(&Ctx->InputLock, irql);
-}
-
-VOID
-PtpFilterCancelTransportRead(_In_ PDEVICE_CONTEXT Ctx)
-{
-    KIRQL irql;
-    WDFREQUEST request;
-    KeAcquireSpinLock(&Ctx->InputLock, &irql);
-    request = Ctx->TransportRequest;
-    if (request != NULL) WdfObjectReference(request);
-    KeReleaseSpinLock(&Ctx->InputLock, irql);
-    if (request != NULL) {
-        WdfRequestCancelSentRequest(request);
-        WdfObjectDereference(request);
-    }
-}
-
 VOID
 PtpFilterInputProcessRequest(
 	_In_ WDFDEVICE Device,
@@ -37,8 +13,15 @@ PtpFilterInputProcessRequest(
 {
 	NTSTATUS status;
 	PDEVICE_CONTEXT deviceContext;
+	WDF_OBJECT_ATTRIBUTES attributes;
 
 	deviceContext = PtpFilterGetContext(Device);
+	WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, HID_DELIVERY_CONTEXT);
+	status = WdfObjectAllocateContext(Request, &attributes, NULL);
+	if (!NT_SUCCESS(status) && status != STATUS_OBJECT_NAME_EXISTS) {
+		WdfRequestComplete(Request, status);
+		return;
+	}
 	TraceLoggingWrite(g_PtpBluetoothTrace, "ConsumerRead",
 		TraceLoggingBoolean(deviceContext->DeviceConfigured, "Configured"));
 	status = WdfRequestForwardToIoQueue(Request, deviceContext->HidReadQueue);
@@ -48,11 +31,22 @@ PtpFilterInputProcessRequest(
 		return;
 	}
 
-	// Only issue request when fully configured.
-	// Otherwise we will let power recovery process to triage it
-	if (deviceContext->DeviceConfigured == TRUE) {
-		PtpFilterInputIssueTransportRequest(Device);
-	}
+}
+
+static VOID
+PtpFilterFinishTransportRead(PDEVICE_CONTEXT Ctx, BOOLEAN Continue, ULONG RetryMs)
+{
+    KIRQL irql;
+    KeAcquireSpinLock(&Ctx->InputLock, &irql);
+    Ctx->TransportReadActive = 0;
+    if (!Ctx->Stopping) {
+        if (RetryMs != 0)
+            WdfTimerStart(Ctx->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_MS(RetryMs));
+        else if (Continue && Ctx->DeviceConfigured)
+            WdfWorkItemEnqueue(Ctx->HidTransportRecoveryWorkItem);
+    }
+    KeSetEvent(&Ctx->TransportIdle, IO_NO_INCREMENT, FALSE);
+    KeReleaseSpinLock(&Ctx->InputLock, irql);
 }
 
 VOID
@@ -77,11 +71,18 @@ PtpFilterInputIssueTransportRequest(
 	WDFMEMORY hidReadOutputMemory;
 	PWORKER_REQUEST_CONTEXT requestContext;
 	BOOLEAN requestStatus = FALSE;
+	KIRQL irql;
 
 	deviceContext = PtpFilterGetContext(Device);
 
-	if (!deviceContext->DeviceConfigured ||
-		InterlockedCompareExchange(&deviceContext->TransportReadActive, 1, 0) != 0) return;
+	KeAcquireSpinLock(&deviceContext->InputLock, &irql);
+	if (deviceContext->Stopping || !deviceContext->DeviceConfigured || deviceContext->TransportReadActive) {
+		KeReleaseSpinLock(&deviceContext->InputLock, irql);
+		return;
+	}
+	deviceContext->TransportReadActive = 1;
+	KeClearEvent(&deviceContext->TransportIdle);
+	KeReleaseSpinLock(&deviceContext->InputLock, irql);
 
 	WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, WORKER_REQUEST_CONTEXT);
 	attributes.ParentObject = Device;
@@ -91,8 +92,7 @@ PtpFilterInputIssueTransportRequest(
 		// Typically this should not fail for USB transport.
 		TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfRequestCreate fails, status = %!STATUS!", status);
 		deviceContext->DeviceConfigured = FALSE;
-		WdfTimerStart(deviceContext->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_MS(250));
-		InterlockedExchange(&deviceContext->TransportReadActive, 0);
+		PtpFilterFinishTransportRead(deviceContext, FALSE, 250);
 		return;
 	}
 
@@ -102,7 +102,7 @@ PtpFilterInputIssueTransportRequest(
 		TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfMemoryCreateFromLookaside fails, status = %!STATUS!", status);
 		WdfObjectDelete(hidReadRequest);
 		WdfDeviceSetFailed(deviceContext->Device, WdfDeviceFailedAttemptRestart);
-		InterlockedExchange(&deviceContext->TransportReadActive, 0);
+		PtpFilterFinishTransportRead(deviceContext, FALSE, 0);
 		return;
 	}
 
@@ -126,7 +126,7 @@ PtpFilterInputIssueTransportRequest(
 		}
 
 		WdfDeviceSetFailed(deviceContext->Device, WdfDeviceFailedAttemptRestart);
-		InterlockedExchange(&deviceContext->TransportReadActive, 0);
+		PtpFilterFinishTransportRead(deviceContext, FALSE, 0);
 		return;
 	}
 
@@ -134,19 +134,12 @@ PtpFilterInputIssueTransportRequest(
 	TraceLoggingWrite(g_PtpBluetoothTrace, "IssueTransportRead",
 		TraceLoggingBoolean(deviceContext->DeviceConfigured, "Configured"));
 	WdfRequestSetCompletionRoutine(hidReadRequest, PtpFilterInputRequestCompletionCallback, requestContext);
-	KIRQL irql;
-	KeAcquireSpinLock(&deviceContext->InputLock, &irql);
-	deviceContext->TransportRequest = hidReadRequest;
-	KeReleaseSpinLock(&deviceContext->InputLock, irql);
 
 	requestStatus = WdfRequestSend(hidReadRequest, deviceContext->HidIoTarget, NULL);
 	if (!requestStatus) {
-		PtpFilterClearTransportRead(deviceContext, hidReadRequest);
 		deviceContext->DeviceConfigured = FALSE;
-		InterlockedExchange(&deviceContext->TransportReadActive, 0);
 		// Retry promptly while a Bluetooth connection is being established.
 		TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! PtpFilterInputIssueTransportRequest request failed to sent");
-		WdfTimerStart(deviceContext->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_MS(250));
 
 		if (hidReadOutputMemory != NULL) {
 			WdfObjectDelete(hidReadOutputMemory);
@@ -155,31 +148,35 @@ PtpFilterInputIssueTransportRequest(
 		if (hidReadRequest != NULL) {
 			WdfObjectDelete(hidReadRequest);
 		}
+		PtpFilterFinishTransportRead(deviceContext, FALSE, 250);
 	}
 }
 
-// Caller holds InputLock; complete the returned request after releasing it.
-static WDFREQUEST
-PtpFilterPrepareDelivery(PDEVICE_CONTEXT Ctx, LONGLONG Now, BOOLEAN Timer, NTSTATUS* Status)
+// Caller holds InputLock. Exactly one drainer completes the prepared FIFO.
+static BOOLEAN
+PtpFilterPrepareDelivery(PDEVICE_CONTEXT Ctx, LONGLONG Now, BOOLEAN Timer)
 {
     PTP_REPORT sample, report;
     WDFREQUEST request;
     WDFMEMORY memory;
-    if (!Ctx->DeviceConfigured || !Ctx->Resampling.HasSample) return NULL;
+    NTSTATUS status;
+    if (Ctx->Stopping || !Ctx->Resampling.HasSample) return FALSE;
+    if (!Ctx->DeviceConfigured && Now - Ctx->Resampling.ArrivalTime <
+        Ctx->QpcFrequency * PTP_RESAMPLE_STALE_MS / 1000) return FALSE;
     PtpFilterResampleBuild(&Ctx->Resampling, Now, Ctx->QpcFrequency,
         Ctx->X.max - Ctx->X.min, Ctx->Y.max - Ctx->Y.min, &sample);
     if (!Ctx->PtpReportTouch) sample.ContactCount = 0;
     if (!Ctx->PtpReportButton) sample.IsButtonClicked = FALSE;
     PtpFilterNormalizeReport(&sample, &Ctx->LastDeliveredReport, &report);
-    if (!report.ContactCount && report.IsButtonClicked == Ctx->LastDeliveredReport.IsButtonClicked) return NULL;
-    *Status = WdfIoQueueRetrieveNextRequest(Ctx->HidReadQueue, &request);
-    if (!NT_SUCCESS(*Status)) return NULL;
+    if (!report.ContactCount && report.IsButtonClicked == Ctx->LastDeliveredReport.IsButtonClicked) return FALSE;
+    status = WdfIoQueueRetrieveNextRequest(Ctx->HidReadQueue, &request);
+    if (!NT_SUCCESS(status)) return FALSE;
     LONGLONG ticks = PtpFilterScanTicks(Now - Ctx->LastReportTime.QuadPart,
         Ctx->QpcFrequency, Ctx->LastScanTicks);
     report.ScanTime = (USHORT)ticks;
-    *Status = WdfRequestRetrieveOutputMemory(request, &memory);
-    if (NT_SUCCESS(*Status)) *Status = WdfMemoryCopyFromBuffer(memory, 0, &report, sizeof(report));
-    if (NT_SUCCESS(*Status)) {
+    status = WdfRequestRetrieveOutputMemory(request, &memory);
+    if (NT_SUCCESS(status)) status = WdfMemoryCopyFromBuffer(memory, 0, &report, sizeof(report));
+    if (NT_SUCCESS(status)) {
         Ctx->LastDeliveredReport = report;
         Ctx->LastScanTicks = ticks;
         Ctx->LastEmitTime = Now;
@@ -188,23 +185,48 @@ PtpFilterPrepareDelivery(PDEVICE_CONTEXT Ctx, LONGLONG Now, BOOLEAN Timer, NTSTA
             TraceLoggingBoolean(Timer, "Timer"), TraceLoggingInt64(Now, "Qpc"),
             TraceLoggingBinary(&report, sizeof(report), "Report"));
     }
-    return request;
+    PHID_DELIVERY_CONTEXT delivery = HidDeliveryGetContext(request);
+    delivery->Request = request;
+    delivery->Status = status;
+    InsertTailList(&Ctx->DeliveryQueue, &delivery->Entry);
+    if (Ctx->DeliveryActive) return FALSE;
+    Ctx->DeliveryActive = TRUE;
+    return TRUE;
+}
+
+static VOID
+PtpFilterDrainDelivery(PDEVICE_CONTEXT Ctx)
+{
+    KIRQL irql;
+    for (;;) {
+        KeAcquireSpinLock(&Ctx->InputLock, &irql);
+        if (IsListEmpty(&Ctx->DeliveryQueue)) {
+            Ctx->DeliveryActive = FALSE;
+            KeReleaseSpinLock(&Ctx->InputLock, irql);
+            return;
+        }
+        PHID_DELIVERY_CONTEXT delivery = CONTAINING_RECORD(
+            RemoveHeadList(&Ctx->DeliveryQueue), HID_DELIVERY_CONTEXT, Entry);
+        WDFREQUEST request = delivery->Request;
+        NTSTATUS status = Ctx->Stopping ? STATUS_CANCELLED : delivery->Status;
+        KeReleaseSpinLock(&Ctx->InputLock, irql);
+        WdfRequestComplete(request, status);
+    }
 }
 
 VOID
 PtpFilterResamplingTimerCallback(_In_ WDFTIMER Timer)
 {
     PDEVICE_CONTEXT ctx = PtpFilterGetContext(WdfTimerGetParentObject(Timer));
-    WDFREQUEST request = NULL;
-    NTSTATUS status = STATUS_SUCCESS;
+    BOOLEAN drain = FALSE;
     KIRQL oldIrql;
     KeAcquireSpinLock(&ctx->InputLock, &oldIrql);
     LARGE_INTEGER now = KeQueryPerformanceCounter(NULL);
     if (ctx->QpcFrequency > 0 &&
         (now.QuadPart - ctx->LastEmitTime) * 1000 / ctx->QpcFrequency >= PTP_RESAMPLE_PERIOD_MS - 1)
-        request = PtpFilterPrepareDelivery(ctx, now.QuadPart, TRUE, &status);
+        drain = PtpFilterPrepareDelivery(ctx, now.QuadPart, TRUE);
     KeReleaseSpinLock(&ctx->InputLock, oldIrql);
-    if (request != NULL) WdfRequestComplete(request, status);
+    if (drain) PtpFilterDrainDelivery(ctx);
 }
 
 VOID
@@ -218,14 +240,14 @@ PtpFilterInputRequestCompletionCallback(
     PWORKER_REQUEST_CONTEXT requestContext = (PWORKER_REQUEST_CONTEXT)Context;
     PDEVICE_CONTEXT ctx = requestContext->DeviceContext;
     WDFMEMORY rawMemory = requestContext->RequestMemory;
-    WDFREQUEST ptpRequest = NULL;
+    BOOLEAN drain = FALSE;
     PTP_REPORT physical;
     NTSTATUS status = Params->IoStatus.Status;
-    NTSTATUS outputStatus = STATUS_SUCCESS;
     size_t capacity = 0, length;
     PUCHAR buffer;
     KIRQL oldIrql;
     BOOLEAN continuePump = TRUE;
+    ULONG retryMs = 0;
     UNREFERENCED_PARAMETER(Target);
     TraceLoggingWrite(g_PtpBluetoothTrace, "TransportReadComplete",
         TraceLoggingNTStatus(status, "Status"),
@@ -235,12 +257,14 @@ PtpFilterInputRequestCompletionCallback(
         continuePump = FALSE;
         // Power exit clears DeviceConfigured before cancelling reads. Errors
         // while still configured, including a transient link loss, need retry.
-        if (ctx->DeviceConfigured) {
+        KeAcquireSpinLock(&ctx->InputLock, &oldIrql);
+        if (!ctx->Stopping && ctx->DeviceConfigured) {
             LONG failures = InterlockedIncrement(&ctx->ReadErrorCount);
             if (failures >= 4) ctx->DeviceConfigured = FALSE;
             TraceLoggingWrite(g_PtpBluetoothTrace, "ReadRecovery", TraceLoggingInt32(failures, "Failures"));
-            WdfTimerStart(ctx->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_MS(failures < 4 ? 20 : 500));
+            retryMs = failures < 4 ? 20 : 500;
         }
+        KeReleaseSpinLock(&ctx->InputLock, oldIrql);
         goto cleanup;
     }
     if (!ctx->DeviceConfigured) goto cleanup;
@@ -252,13 +276,19 @@ PtpFilterInputRequestCompletionCallback(
     if (buffer[0] != (ctx->VendorID == HID_VID_APPLE_BT ? 0x31 : 0x02)) {
         // If firmware has returned to mouse mode, restore multitouch mode.
         if (ctx->VendorID == HID_VID_APPLE_BT && buffer[0] == 0x02) {
+            KeAcquireSpinLock(&ctx->InputLock, &oldIrql);
             ctx->DeviceConfigured = FALSE;
             continuePump = FALSE;
-            WdfTimerStart(ctx->HidTransportRecoveryTimer, WDF_REL_TIMEOUT_IN_MS(100));
+            retryMs = 100;
+            KeReleaseSpinLock(&ctx->InputLock, oldIrql);
         }
         goto cleanup;
     }
     KeAcquireSpinLock(&ctx->InputLock, &oldIrql);
+    if (ctx->Stopping || !ctx->DeviceConfigured) {
+        KeReleaseSpinLock(&ctx->InputLock, oldIrql);
+        goto cleanup;
+    }
     LARGE_INTEGER now = KeQueryPerformanceCounter(NULL);
     if (!PtpFilterBuildType5Report(buffer, length, ctx->InputHeaderSize,
         ctx->X.min, ctx->X.max, ctx->Y.min, ctx->Y.max, 0,
@@ -272,14 +302,12 @@ PtpFilterInputRequestCompletionCallback(
     BOOLEAN transition = PtpFilterResampleOnSample(&ctx->Resampling, &physical,
         sourceTime, now.QuadPart, ctx->QpcFrequency);
     ctx->LastPhysicalReport = physical;
-    if (transition) ptpRequest = PtpFilterPrepareDelivery(ctx, now.QuadPart, FALSE, &outputStatus);
+    if (transition) drain = PtpFilterPrepareDelivery(ctx, now.QuadPart, FALSE);
     KeReleaseSpinLock(&ctx->InputLock, oldIrql);
-    if (ptpRequest != NULL) WdfRequestComplete(ptpRequest, outputStatus);
+    if (drain) PtpFilterDrainDelivery(ctx);
 
 cleanup:
-    PtpFilterClearTransportRead(ctx, Request);
     WdfObjectDelete(Request);
     if (rawMemory != NULL) WdfObjectDelete(rawMemory);
-    InterlockedExchange(&ctx->TransportReadActive, 0);
-    if (continuePump && ctx->DeviceConfigured) WdfWorkItemEnqueue(ctx->HidTransportRecoveryWorkItem);
+    PtpFilterFinishTransportRead(ctx, continuePump, retryMs);
 }

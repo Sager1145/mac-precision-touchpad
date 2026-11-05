@@ -41,7 +41,7 @@ static void testProtocol(void) {
 }
 static void testContinuousMotion(void) {
  DEVICE_CONTEXT ctx={0}; PTP_REPORT sample={0}, output; LARGE_INTEGER now;
- for(const struct BCM5974_CONFIG *cfg=Bcm5974ConfigTable;cfg->ansi;cfg++)
+ for(const struct BCM5974_CONFIG *cfg=Bcm5974ConfigTable;cfg < Bcm5974ConfigTable + ARRAYSIZE(Bcm5974ConfigTable);cfg++)
   if(cfg->ansi==USB_DEVICE_ID_APPLE_MAGICTRACKPAD2_USBC) ctx.DeviceInfo=cfg;
  ctx.QpcFrequency=10000000; ctx.IsSurfaceReportOn=TRUE;
  sample.ContactCount=2; sample.IsButtonClicked=1;
@@ -98,7 +98,7 @@ int main(void) {
  PTP_REPORT sample = {0}, output;
  LARGE_INTEGER now;
  ctx.DeviceInfo = &Bcm5974ConfigTable[0];
- for (const struct BCM5974_CONFIG *cfg=Bcm5974ConfigTable;cfg->ansi;cfg++)
+ for (const struct BCM5974_CONFIG *cfg=Bcm5974ConfigTable;cfg < Bcm5974ConfigTable + ARRAYSIZE(Bcm5974ConfigTable);cfg++)
   if(cfg->ansi==USB_DEVICE_ID_APPLE_MAGICTRACKPAD2_USBC) ctx.DeviceInfo=cfg;
  ctx.QpcFrequency=10000000; ctx.IsSurfaceReportOn=TRUE;
  sample.ContactCount=1; sample.Contacts[0].ContactID=15;

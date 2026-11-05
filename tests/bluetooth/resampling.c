@@ -69,6 +69,29 @@ int main(void)
     state.SourceTime = 1110000;
     stamp(header, 16);
     assert(PtpFilterSourceTime(&state, header, 1000020, frequency) == 1220000);
+
+    // A delayed third sample must not move the resampling target backwards.
+    RtlZeroMemory(&state, sizeof(state));
+    sample.ContactCount = 1;
+    sample.IsButtonClicked = 1;
+    sample.Contacts[0].TipSwitch = 1;
+    sample.Contacts[0].X = 1000;
+    PtpFilterResampleOnSample(&state, &sample, 0, 0, frequency);
+    sample.Contacts[0].X = 1036;
+    PtpFilterResampleOnSample(&state, &sample, 120000, 120000, frequency);
+    PtpFilterResampleBuild(&state, 390000, frequency, 7612, 5065, &previous);
+    LONGLONG previousTarget = state.LastTarget;
+    sample.Contacts[0].X = 1072;
+    PtpFilterResampleOnSample(&state, &sample, 240000, 400000, frequency);
+    PtpFilterResampleBuild(&state, 400000, frequency, 7612, 5065, &out);
+    assert(state.LastTarget >= previousTarget && out.Contacts[0].X >= previous.Contacts[0].X);
+    PtpFilterResampleBuild(&state, 50000000, frequency, 7612, 5065, &out);
+    assert(!out.IsButtonClicked && !out.ContactCount);
+    PtpFilterNormalizeReport(&out, &previous, &delivered);
+    assert(delivered.ContactCount == 1 && !delivered.Contacts[0].TipSwitch);
+    PtpFilterNormalizeReport(&out, &delivered, &previous);
+    assert(!previous.ContactCount);
+    assert(PtpFilterResampleOnSample(&state, &sample, 360000, 50010000, frequency));
     puts("PASS: integer Bluetooth resampling, 125 Hz continuous drag/scroll, unchanged velocity, immediate transitions, one-shot lift, device timestamp wrap and buffered packet timing");
     return 0;
 }

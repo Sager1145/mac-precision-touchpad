@@ -43,6 +43,9 @@ PtpFilterCreateDevice(
     // Initialize context and interface
     deviceContext = PtpFilterGetContext(device);
     KeInitializeSpinLock(&deviceContext->InputLock);
+    InitializeListHead(&deviceContext->DeliveryQueue);
+    KeInitializeEvent(&deviceContext->TransportIdle, NotificationEvent, TRUE);
+    deviceContext->Stopping = TRUE;
     deviceContext->PtpReportTouch = TRUE;
     deviceContext->PtpReportButton = TRUE;
     deviceContext->Device = device;
@@ -65,6 +68,7 @@ PtpFilterCreateDevice(
     );
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "WdfLookasideListCreate failed: %!STATUS!", status);
+        goto exit;
     }
 
     // Initialize HID recovery timer
@@ -76,6 +80,7 @@ PtpFilterCreateDevice(
     status = WdfTimerCreate(&timerConfig, &deviceAttributes, &deviceContext->HidTransportRecoveryTimer);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "WdfTimerCreate failed: %!STATUS!", status);
+        goto exit;
     }
 
     // Initialize HID recovery workitem
@@ -85,6 +90,7 @@ PtpFilterCreateDevice(
     status = WdfWorkItemCreate(&workitemConfig, &deviceAttributes, &deviceContext->HidTransportRecoveryWorkItem);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "HidTransportRecoveryWorkItem failed: %!STATUS!", status);
+        goto exit;
     }
 
     // Set initial state
@@ -147,11 +153,20 @@ PtpFilterDeviceD0Entry(
     _In_ WDF_POWER_DEVICE_STATE PreviousState
 )
 {
-    NTSTATUS status = STATUS_SUCCESS;
-
     PAGED_CODE();
-    UNREFERENCED_PARAMETER(Device);
     UNREFERENCED_PARAMETER(PreviousState);
+    NTSTATUS status = WdfIoTargetStart(WdfDeviceGetIoTarget(Device));
+    if (!NT_SUCCESS(status)) return status;
+    PDEVICE_CONTEXT ctx = PtpFilterGetContext(Device);
+    LARGE_INTEGER frequency;
+    ctx->LastReportTime = KeQueryPerformanceCounter(&frequency);
+    ctx->QpcFrequency = frequency.QuadPart;
+    ctx->LastScanTicks = 0;
+    ctx->LastEmitTime = 0;
+    RtlZeroMemory(&ctx->LastDeliveredReport, sizeof(ctx->LastDeliveredReport));
+    RtlZeroMemory(&ctx->LastPhysicalReport, sizeof(ctx->LastPhysicalReport));
+    RtlZeroMemory(&ctx->Resampling, sizeof(ctx->Resampling));
+    ctx->Stopping = FALSE;
     TraceLoggingWrite(g_PtpBluetoothTrace, "PowerEntry");
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Entry");
 
@@ -176,10 +191,17 @@ PtpFilterDeviceD0Exit(
     deviceContext = PtpFilterGetContext(Device);
 
     // Reset device state
+    KIRQL irql;
+    KeAcquireSpinLock(&deviceContext->InputLock, &irql);
+    deviceContext->Stopping = TRUE;
     deviceContext->DeviceConfigured = FALSE;
+    KeReleaseSpinLock(&deviceContext->InputLock, irql);
     WdfTimerStop(deviceContext->HidTransportRecoveryTimer, TRUE);
     WdfTimerStop(deviceContext->ResamplingTimer, TRUE);
-    PtpFilterCancelTransportRead(deviceContext);
+    // Only the worker submits reads. Flush it before cancelling a sent read.
+    WdfWorkItemFlush(deviceContext->HidTransportRecoveryWorkItem);
+    WdfIoTargetStop(WdfDeviceGetIoTarget(Device), WdfIoTargetCancelSentIo);
+    KeWaitForSingleObject(&deviceContext->TransportIdle, Executive, KernelMode, FALSE, NULL);
 
     // Cancelling all outstanding requests
     TraceLoggingWrite(g_PtpBluetoothTrace, "PowerExit");
@@ -250,16 +272,6 @@ PtpFilterSelfManagedIoInit(
         goto exit;
     }
 
-    // Stamp last query performance counter
-    LARGE_INTEGER frequency;
-    deviceContext->LastReportTime = KeQueryPerformanceCounter(&frequency);
-    deviceContext->QpcFrequency = frequency.QuadPart;
-    deviceContext->LastScanTicks = 0;
-    RtlZeroMemory(&deviceContext->LastDeliveredReport, sizeof(PTP_REPORT));
-    RtlZeroMemory(&deviceContext->LastPhysicalReport, sizeof(PTP_REPORT));
-    RtlZeroMemory(&deviceContext->Resampling, sizeof(deviceContext->Resampling));
-    deviceContext->LastEmitTime = 0;
-
     // Set device state
     deviceContext->DeviceConfigured = TRUE;
     TraceLoggingWrite(g_PtpBluetoothTrace, "ConfiguredInitial");
@@ -299,16 +311,6 @@ PtpFilterSelfManagedIoRestart(
         status = STATUS_INVALID_STATE_TRANSITION;
         goto exit;
     }
-
-    // Stamp last query performance counter
-    LARGE_INTEGER frequency;
-    deviceContext->LastReportTime = KeQueryPerformanceCounter(&frequency);
-    deviceContext->QpcFrequency = frequency.QuadPart;
-    deviceContext->LastScanTicks = 0;
-    RtlZeroMemory(&deviceContext->LastDeliveredReport, sizeof(PTP_REPORT));
-    RtlZeroMemory(&deviceContext->LastPhysicalReport, sizeof(PTP_REPORT));
-    RtlZeroMemory(&deviceContext->Resampling, sizeof(deviceContext->Resampling));
-    deviceContext->LastEmitTime = 0;
 
     // Set device state
     deviceContext->DeviceConfigured = TRUE;
@@ -472,23 +474,31 @@ PtpFilterRecoveryTimerCallback(
 
     device = WdfTimerGetParentObject(Timer);
     deviceContext = PtpFilterGetContext(device);
+    KIRQL irql;
+    KeAcquireSpinLock(&deviceContext->InputLock, &irql);
+    BOOLEAN stopping = deviceContext->Stopping;
+    BOOLEAN configured = deviceContext->DeviceConfigured;
+    KeReleaseSpinLock(&deviceContext->InputLock, irql);
+    if (stopping) return;
 
     // A transient transport read error only needs another read. Re-running
     // self-managed IO restart would reset ScanTime/contact history mid-gesture.
-    if (!deviceContext->DeviceConfigured) {
+    if (!configured) {
         status = PtpFilterConfigureMultiTouch(device);
-        if (!NT_SUCCESS(status)) {
-            WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(500));
+        KeAcquireSpinLock(&deviceContext->InputLock, &irql);
+        if (deviceContext->Stopping) {
+            KeReleaseSpinLock(&deviceContext->InputLock, irql);
             return;
         }
-        if (deviceContext->QpcFrequency == 0) {
-            LARGE_INTEGER frequency;
-            deviceContext->LastReportTime = KeQueryPerformanceCounter(&frequency);
-            deviceContext->QpcFrequency = frequency.QuadPart;
+        if (!NT_SUCCESS(status)) {
+            WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(500));
+            KeReleaseSpinLock(&deviceContext->InputLock, irql);
+            return;
         }
         deviceContext->DeviceConfigured = TRUE;
         WdfTimerStart(deviceContext->ResamplingTimer, WDF_REL_TIMEOUT_IN_MS(PTP_RESAMPLE_PERIOD_MS));
+        KeReleaseSpinLock(&deviceContext->InputLock, irql);
     }
     TraceLoggingWrite(g_PtpBluetoothTrace, "RecoveryReadIssued");
-    PtpFilterInputIssueTransportRequest(device);
+    WdfWorkItemEnqueue(deviceContext->HidTransportRecoveryWorkItem);
 }

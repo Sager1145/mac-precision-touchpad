@@ -76,6 +76,7 @@ typedef struct _DEVICE_CONTEXT
 
 	// Timer
 	LARGE_INTEGER LastReportTime;
+	LARGE_INTEGER QpcFrequency;
 	WDFTIMER PowerOnRecoveryTimer;
 
 	// List of buffers

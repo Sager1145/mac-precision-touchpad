@@ -53,16 +53,19 @@ typedef struct _DEVICE_CONTEXT
 
     // Device State
     BOOLEAN DeviceConfigured;
+    BOOLEAN Stopping;
 
     // PTP report specific
     LARGE_INTEGER   LastReportTime;
     LONGLONG        QpcFrequency;
     LONGLONG        LastScanTicks;
     KSPIN_LOCK      InputLock;
+    LIST_ENTRY      DeliveryQueue;
+    BOOLEAN         DeliveryActive;
+    KEVENT          TransportIdle;
     PTP_REPORT      LastDeliveredReport;
     volatile LONG  ReadErrorCount;
     volatile LONG  TransportReadActive;
-    WDFREQUEST     TransportRequest;
     WDFTIMER       ResamplingTimer;
     LONGLONG       LastEmitTime;
     PTP_REPORT     LastPhysicalReport;
@@ -81,6 +84,14 @@ typedef struct _WORKER_REQUEST_CONTEXT {
 } WORKER_REQUEST_CONTEXT, * PWORKER_REQUEST_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(WORKER_REQUEST_CONTEXT, WorkerRequestGetContext)
+
+typedef struct _HID_DELIVERY_CONTEXT {
+    LIST_ENTRY Entry;
+    WDFREQUEST Request;
+    NTSTATUS Status;
+} HID_DELIVERY_CONTEXT, *PHID_DELIVERY_CONTEXT;
+
+WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(HID_DELIVERY_CONTEXT, HidDeliveryGetContext)
 
 // Initialization routines
 NTSTATUS

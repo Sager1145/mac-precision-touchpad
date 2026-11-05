@@ -67,13 +67,17 @@ function Get-WindowsDriver { @([pscustomobject]@{OriginalFileName='C:\old\amtptp
 function Invoke-PnpUtil([string[]]$Arguments) {
     $script:calls.Add(($Arguments -join ' '))
     if ($script:failPnp) { throw 'Injected PnP failure' }
-    if ($Arguments[0] -eq '/add-driver') { return $script:addDriverCode }
+    if ($Arguments[0] -eq '/add-driver') {
+        if ($script:addDriverCode -eq 0) {
+            Copy-Item -LiteralPath $Arguments[1] -Destination (Join-Path $fakeWindows 'INF\oem42.inf')
+        }
+        return $script:addDriverCode
+    }
     return 0
 }
 try {
     Rejects { Install-Touchpad $payload $state $false } 'Unapproved certificate trust accepted'
     Assert ($imports -eq 0 -and $calls.Count -eq 0) 'Unapproved trust mutated state'
-    Copy-Item -LiteralPath (Join-Path $payload 'AmtPtpDevice.inf') -Destination (Join-Path $fakeWindows 'INF\oem42.inf')
     Install-Touchpad $payload $state $true | Out-Null
     Assert ($imports -eq 2) 'Both explicitly approved trust stores were not used'
     Assert ($calls[0] -like '/export-driver oem4.inf *') 'Previous driver not backed up first'
@@ -81,8 +85,11 @@ try {
     $record = Join-Path $state 'installed.json'
     $owned = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
     Assert ($owned.Packages[0].Name -eq 'oem42.inf') 'Incorrect package ownership'
+    Copy-Item -LiteralPath (Join-Path $payload 'AmtPtpDevice.inf') -Destination (Join-Path $fakeWindows 'INF\oem43.inf')
     $script:addDriverCode = 259
     Assert ((Install-Touchpad $payload $state $true) -eq 0) 'An already-staged matching package should report success'
+    $owned = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
+    Assert ($owned.Packages.Count -eq 1 -and $owned.Packages[0].Name -eq 'oem42.inf') 'Setup adopted an identical manually staged package'
     $script:addDriverCode = 0
     $script:calls.Clear()
     Add-Content -LiteralPath (Join-Path $fakeWindows 'INF\oem42.inf') 'another owner'

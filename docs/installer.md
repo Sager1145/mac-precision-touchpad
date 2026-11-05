@@ -1,8 +1,8 @@
-# Install Mac Precision Touchpad v0.2.0-preview.2
+# Install Mac Precision Touchpad v0.2.0
 
 This fork supports Magic Trackpad 3 USB-C over USB and Bluetooth on Windows
 10/11 x64 and ARM64. Download the `setup.exe` asset from
-https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.2.0-preview.2
+https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.2.0
 and the matching SHA256SUMS.txt. Setup selects the native architecture.
 Separate `x64-driver.zip` and `arm64-driver.zip` downloads support manual installation.
 
@@ -42,7 +42,7 @@ The wizard creates an Installed apps entry, a Touchpad settings shortcut and
 a copy of this guide. Files are installed in Program Files\Mac Precision Touchpad.
 Driver backups, ownership records and logs are in:
 
-    C:\ProgramData\Sager1145\MacPrecisionTouchpad
+    C:\Program Files\Mac Precision Touchpad State
 
 If a newer or higher-ranking driver is already selected, Windows may keep it.
 Check Device Manager's Driver tab before assuming the active driver changed.
@@ -60,11 +60,15 @@ or change Windows boot settings.
 Logs and backups are retained. To restore an exported driver from an elevated
 terminal, supply the actual backup directory:
 
-    pnputil /add-driver "C:\ProgramData\Sager1145\MacPrecisionTouchpad\backup-YYYYMMDD-HHMMSS\*.inf" /subdirs /install
+    pnputil /add-driver "C:\Program Files\Mac Precision Touchpad State\backup-YYYYMMDD-HHMMSS\*.inf" /subdirs /install
 
 An old manually installed standalone Bluetooth package can remain in the
 driver store after uninstall and may be selected again by Windows. The
 uninstaller intentionally does not remove packages it did not install.
+Setup also leaves identical packages that were staged before installation
+outside its ownership record. Earlier records in ProgramData are retained
+for reference. Use Device Manager or the original OEM INF to manage those
+packages.
 
 ## Manual / unattended installation
 

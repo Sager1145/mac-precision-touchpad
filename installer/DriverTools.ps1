@@ -2,6 +2,42 @@
 Set-StrictMode -Version Latest
 $script:CertificateThumbprint = '94A13BEE28D788FC4A7FA91C568968C7DBADDC69'
 
+function Get-TrustedStateDirectory {
+    # ProgramData permits ordinary users to create directories. Keep elevated
+    # logs and package ownership under the native protected Program Files root.
+    $root = [Environment]::GetFolderPath('ProgramFiles')
+    if (-not $root) { throw 'Cannot locate Program Files.' }
+    $directory = Join-Path $root 'Mac Precision Touchpad State'
+    $trusted = @('S-1-5-18','S-1-5-32-544',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    $write = [Security.AccessControl.FileSystemRights]::Write -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($path in @($root, $directory)) {
+        if (-not (Test-Path -LiteralPath $path)) {
+            New-Item -ItemType Directory -Path $path | Out-Null
+        }
+        $item = Get-Item -LiteralPath $path -Force
+        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Unsafe installer state directory: $path"
+        }
+        $acl = Get-Acl -LiteralPath $path
+        if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) {
+            throw "Untrusted installer state owner: $path"
+        }
+        foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+            if ($rule.AccessControlType -eq 'Allow' -and
+                ($rule.FileSystemRights -band $write) -and $rule.IdentityReference.Value -notin $trusted -and
+                $rule.IdentityReference.Value -ne 'S-1-3-0') {
+                throw "Installer state is writable by an untrusted principal: $path"
+            }
+        }
+    }
+    return $directory
+}
+
 function Assert-Payload([string]$Payload) {
     $manifest = Get-Content -LiteralPath (Join-Path $Payload 'manifest.json') -Raw | ConvertFrom-Json
     $native = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
@@ -96,17 +132,21 @@ function Install-Touchpad([string]$Payload, [string]$StateDirectory, [bool]$Trus
         [IO.Path]::GetFileName($_.OriginalFileName) -in @('amtptpdevice.inf','amtptphidfilter.inf')
     })
     foreach ($driver in $previous) { Invoke-PnpUtil @('/export-driver', $driver.Driver, $backup) | Out-Null }
+    $alreadyStaged = @(Find-PublishedPackage $Payload)
     $code = Invoke-PnpUtil @('/add-driver', (Join-Path $Payload 'AmtPtpDevice.inf'), '/install')
     $published = @(Find-PublishedPackage $Payload)
     if (-not $published.Count) { throw 'The signed driver package was not found in the Windows driver store after installation.' }
     $statePath = Join-Path $StateDirectory 'installed.json'
-    $owned = @($published)
+    $owned = @($published | Where-Object { $_.Name -notin @($alreadyStaged | ForEach-Object Name) })
     if (Test-Path -LiteralPath $statePath) {
         $old = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-        $owned += @($old.Packages | Where-Object { $_.Name -notin $published.Name })
+        $owned += @($old.Packages | Where-Object { $_.Name -notin @($owned | ForEach-Object Name) })
     }
+    $temporaryState = Join-Path $StateDirectory ([guid]::NewGuid().ToString('N') + '.json')
     [pscustomobject]@{Version=$manifest.Version; Packages=$owned; Backup=$backup; RebootRequired=($code -eq 3010)} |
-        ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $statePath -Encoding UTF8
+        ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $temporaryState -Encoding UTF8
+    if ([IO.File]::Exists($statePath)) { [IO.File]::Replace($temporaryState, $statePath, [NullString]::Value) }
+    else { [IO.File]::Move($temporaryState, $statePath) }
     Write-Host "Driver staged/installed. Reconnect an unplugged trackpad to bind the update. Previous drivers: $backup"
     if ($code -eq 3010) { return 3010 }
     return 0

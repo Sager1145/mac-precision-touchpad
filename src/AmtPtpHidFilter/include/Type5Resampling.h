@@ -32,6 +32,11 @@ PtpFilterResampleOnSample(PTP_RESAMPLE_STATE* State, const PTP_REPORT* Sample,
 {
     ULONG before = 0, after = 0;
     BOOLEAN seen[16] = {0};
+    if (State->HasSample && (Source < State->SourceTime ||
+        Arrival - State->ArrivalTime >= Frequency * PTP_RESAMPLE_STALE_MS / 1000)) {
+        RtlZeroMemory(State->Fingers, sizeof(State->Fingers));
+        State->HasSample = State->HasTarget = FALSE;
+    }
     BOOLEAN transition = !State->HasSample || State->Button != Sample->IsButtonClicked;
     ULONG i;
     for (i = 0; i < 16; i++)
@@ -101,15 +106,21 @@ PtpFilterResamplePosition(const PTP_RESAMPLE_FINGER* Finger, LONGLONG Target,
 }
 
 static VOID
-PtpFilterResampleBuild(const PTP_RESAMPLE_STATE* State, LONGLONG Now, LONGLONG Frequency,
+PtpFilterResampleBuild(PTP_RESAMPLE_STATE* State, LONGLONG Now, LONGLONG Frequency,
     LONG MaxX, LONG MaxY, PPTP_REPORT Report)
 {
     ULONG i;
     RtlZeroMemory(Report, sizeof(*Report));
     Report->ReportID = REPORTID_MULTITOUCH;
+    if (!State->HasSample || Frequency <= 0 ||
+        Now - State->ArrivalTime >= Frequency * PTP_RESAMPLE_STALE_MS / 1000) return;
     Report->IsButtonClicked = State->Button;
-    if (!State->HasSample || Frequency <= 0) return;
     LONGLONG target = State->SourceTime + (Now - State->ArrivalTime) - Frequency * PTP_RESAMPLE_DELAY_MS / 1000;
+    LONGLONG horizon = State->SourceTime + Frequency * PTP_RESAMPLE_EXTRAP_MS / 1000;
+    if (target > horizon) target = horizon;
+    if (State->HasTarget && target < State->LastTarget) target = State->LastTarget;
+    State->LastTarget = target;
+    State->HasTarget = TRUE;
     for (i = 0; i < 16 && Report->ContactCount < 5; i++) {
         const PTP_RESAMPLE_FINGER* f = &State->Fingers[i];
         LONG x, y;

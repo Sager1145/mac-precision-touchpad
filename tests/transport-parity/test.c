@@ -60,7 +60,7 @@ int main(void) {
     DEVICE_CONTEXT usb = {0};
     PTP_RESAMPLE_STATE bt = {0};
     PTP_REPORT previousPhysical = {0}, previous = {0};
-    for (const struct BCM5974_CONFIG *cfg = Bcm5974ConfigTable; cfg->ansi; cfg++)
+    for (const struct BCM5974_CONFIG *cfg = Bcm5974ConfigTable; cfg < Bcm5974ConfigTable + ARRAYSIZE(Bcm5974ConfigTable); cfg++)
         if (cfg->ansi == USB_DEVICE_ID_APPLE_MAGICTRACKPAD2_USBC) usb.DeviceInfo = cfg;
     assert(usb.DeviceInfo);
     usb.QpcFrequency = 10000000;
@@ -126,6 +126,12 @@ int main(void) {
     PtpFilterResampleBuild(&bt, time.QuadPart + 300000, usb.QpcFrequency, 7612, 5065, &b);
     compare(&a, &b);
     assert(a.Contacts[0].X == 2100 && b.Contacts[0].X == 2100);
+    // A lost release must expire on USB as well as Bluetooth.
+    LONGLONG stale = time.QuadPart + usb.QpcFrequency * INTERP_STALE_MS / 1000;
+    AmtPtpInterpBuildReport(&usb, stale, &a);
+    PtpFilterResampleBuild(&bt, stale, usb.QpcFrequency, 7612, 5065, &b);
+    compare(&a, &b);
+    assert(!a.ContactCount && !a.IsButtonClicked);
     // Malformed USB packets must leave the active interpolation state intact.
     UCHAR shortPacket[12] = {0};
     unsigned before = completed;

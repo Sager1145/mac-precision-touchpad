@@ -6,11 +6,11 @@ This fork focuses on **Magic Trackpad 3 USB-C over USB and Bluetooth**: smooth c
 
 ## Download and install
 
-**[Download v0.2.0-preview.2](https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.2.0-preview.2)** for Windows 10/11 x64 and ARM64.
+**[Download v0.2.0](https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.2.0)** for Windows 10/11 x64 and ARM64.
 
-Choose `mac-precision-touchpad-v0.2.0-preview.2-setup.exe`. Setup selects the native x64 or ARM64 package automatically. It provides previous-driver backups, logs, upgrades and an Installed apps uninstall entry. SHA-256 checksums are available for every download.
+Choose `mac-precision-touchpad-v0.2.0-setup.exe`. Setup selects the native x64 or ARM64 package automatically. It provides previous-driver backups, logs, upgrades and an Installed apps uninstall entry. SHA-256 checksums are available for every download.
 
-**This is a test-signed preview, not a Microsoft/WHQL production-signed driver.** Windows must already allow test-signed drivers. The installer checks this and stops if preparation is needed. It does not change boot configuration, Secure Boot, BitLocker or Memory Integrity. Certificate trust is an explicit optional task.
+**This release uses WDK test signing.** Prepare Windows to load test-signed drivers before running Setup. The installer checks the active policy and offers certificate trust as an optional task.
 
 Read the **[installation and recovery guide](docs/installer.md)** before installing. The [older manual test-signing guide](docs/test-signed-installation.md) describes the first USB-only preview.
 
@@ -47,7 +47,7 @@ Both transports use 125 Hz output, a 12 ms interpolation delay and measured-posi
 
 Bluetooth uses device timestamps to preserve buffered packet spacing and retries transient transport errors without restarting the gesture. USB uses a high-resolution native waitable timer. Radio latency and Windows scheduling can still differ.
 
-See [USB/Bluetooth parity](docs/transport-parity.md), [Bluetooth implementation and testing](docs/bluetooth-trackpad-3.md), and the [release notes](docs/release-v0.2.0-preview.2.md).
+See [USB/Bluetooth parity](docs/transport-parity.md), [Bluetooth implementation and testing](docs/bluetooth-trackpad-3.md), and the [release notes](docs/release-v0.2.0.md).
 
 ## Device support
 
@@ -60,7 +60,7 @@ Legacy device lists and project history are preserved in the [upstream README sn
 - Pair in Windows settings, then unplug USB when checking Bluetooth.
 - If upgrading while disconnected, reconnect the trackpad to select the new package.
 - Check Device Manager for a healthy Apple trackpad and Precision Touchpad child device.
-- If Setup stops, read its message and logs in `C:\ProgramData\Sager1145\MacPrecisionTouchpad`.
+- If Setup stops, read its message and logs in `C:\Program Files\Mac Precision Touchpad State`.
 - Uninstall through Windows Installed apps. Only packages recorded by this installer are removed; backups, logs and certificate trust remain for recovery.
 
 Report the Windows build, trackpad model, connection type and reproduction steps in [Issues](https://github.com/Sager1145/mac-precision-touchpad/issues). Avoid posting Bluetooth addresses or other device identifiers unnecessarily.

@@ -3,6 +3,7 @@
 #define PTP_RESAMPLE_DELAY_MS 12
 #define PTP_RESAMPLE_EXTRAP_MS 15
 #define PTP_RESAMPLE_HISTORY 8
+#define PTP_RESAMPLE_STALE_MS 250
 
 typedef struct _PTP_HISTORY_POINT {
     LONG X, Y;
@@ -19,8 +20,9 @@ typedef struct _PTP_RESAMPLE_FINGER {
 
 typedef struct _PTP_RESAMPLE_STATE {
     PTP_RESAMPLE_FINGER Fingers[16];
-    BOOLEAN HasSample, ClockValid;
+    BOOLEAN HasSample, ClockValid, HasTarget;
     UCHAR Button;
     ULONG DeviceTimestamp;
     LONGLONG SourceTime, ArrivalTime;
+    LONGLONG LastTarget;
 } PTP_RESAMPLE_STATE;

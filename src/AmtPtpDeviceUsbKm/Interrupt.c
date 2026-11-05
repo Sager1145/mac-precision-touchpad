@@ -161,6 +161,7 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
 			"%!FUNC! WdfRequestRetrieveOutputMemory failed with %!STATUS!",
 			Status
 		);
+		WdfRequestComplete(Request, Status);
 		return;
 	}
 
@@ -173,25 +174,12 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
 	raw_n = (NumBytesTransferred - headerSize) / fingerprintSize;
 	UCHAR* f_base = TouchBuffer + headerSize + pDeviceContext->DeviceInfo->tp_delta;
 
-	// Scan time is in 100us
-	KeQueryPerformanceCounter(&CurrentPerfCounter);
-	PerfCounterDelta = (CurrentPerfCounter.QuadPart - pDeviceContext->LastReportTime.QuadPart) / 100;
-	if (PerfCounterDelta > 0xFF) {
-		PerfCounterDelta = 0xFF;
-	}
-
-	PtpReport.ScanTime = (USHORT) PerfCounterDelta;
+	CurrentPerfCounter = KeQueryPerformanceCounter(NULL);
+	PerfCounterDelta = CurrentPerfCounter.QuadPart - pDeviceContext->LastReportTime.QuadPart;
+	PtpReport.ScanTime = (USHORT)(PerfCounterDelta * 10000 / pDeviceContext->QpcFrequency.QuadPart);
 
 	if (pDeviceContext->PtpReportTouch) {
 		if (raw_n >= PTP_MAX_CONTACT_POINTS) raw_n = PTP_MAX_CONTACT_POINTS;
-		if (raw_n * fingerprintSize < (NumBytesTransferred - headerSize)) {
-			TraceEvents(
-				TRACE_LEVEL_ERROR, TRACE_DRIVER,
-				"%!FUNC! Buffer may have a problem"
-			);
-			WdfRequestComplete(Request, STATUS_DATA_ERROR);
-			return;
-		}
 
 		PtpReport.ContactCount = (UCHAR) raw_n;
 
@@ -239,6 +227,7 @@ AmtPtpEvtUsbInterruptPipeReadComplete(
 			"%!FUNC! WdfMemoryCopyFromBuffer failed with %!STATUS!",
 			Status
 		);
+		WdfRequestComplete(Request, Status);
 		return;
 	}
 

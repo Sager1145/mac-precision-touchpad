@@ -316,7 +316,7 @@ AmtPtpEvtDeviceD0Entry(
 	}
 
 	// Get current time counter
-	KeQueryPerformanceCounter(&pDeviceContext->LastReportTime);
+	pDeviceContext->LastReportTime = KeQueryPerformanceCounter(&pDeviceContext->QpcFrequency);
 
 	//
 	// Since continuous reader is configured for this interrupt-pipe, we must explicitly start

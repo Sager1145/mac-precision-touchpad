@@ -525,6 +525,11 @@ AmtPtpInterpOnSample(
 	if (DeviceContext->QpcFrequency <= 0) {
 		return FALSE;
 	}
+	if (DeviceContext->InterpHasSample && Now.QuadPart - DeviceContext->LastSampleTime.QuadPart >=
+		DeviceContext->QpcFrequency * INTERP_STALE_MS / 1000) {
+		RtlZeroMemory(DeviceContext->InterpFingers, sizeof(DeviceContext->InterpFingers));
+		DeviceContext->InterpHasSample = FALSE;
+	}
 	for (i = 0; i < INTERP_MAX_FINGERS; i++) {
 		if (DeviceContext->InterpFingers[i].Active && DeviceContext->InterpFingers[i].TipSwitch)
 			oldMask |= 1UL << i;
@@ -654,10 +659,12 @@ AmtPtpInterpBuildReport(
 
 	RtlZeroMemory(Report, sizeof(PTP_REPORT));
 	Report->ReportID = REPORTID_MULTITOUCH;
+	if (!DeviceContext->InterpHasSample || DeviceContext->QpcFrequency <= 0 ||
+		NowQpc - DeviceContext->LastSampleTime.QuadPart >=
+		DeviceContext->QpcFrequency * INTERP_STALE_MS / 1000) return;
 	Report->IsButtonClicked = DeviceContext->InterpButton;
 
-	if (!DeviceContext->IsSurfaceReportOn || !DeviceContext->InterpHasSample ||
-		DeviceContext->QpcFrequency <= 0) {
+	if (!DeviceContext->IsSurfaceReportOn) {
 		return;
 	}
 

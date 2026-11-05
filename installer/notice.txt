@@ -1,6 +1,6 @@
-Magic Trackpad 3 USB-C and Bluetooth - test-signed preview
+Magic Trackpad 3 USB-C and Bluetooth - WDK test-signed release
 
-This package is signed with a local WDK test certificate. It is not Microsoft/WHQL production-signed. Windows must already be configured to allow test-signed drivers; Setup checks the active policy and stops if it is not enabled.
+This package uses a local WDK test certificate. Prepare Windows to load test-signed drivers before running Setup. Setup checks the active policy before installing.
 
 Setup does not change boot configuration, Secure Boot, BitLocker or Memory Integrity. Read INSTALL.txt for preparation instructions. Certificate trust is a separate, optional task on the next page. Select it only if you want to trust this bundled public test certificate. No private key is distributed.
 

@@ -473,6 +473,14 @@ AmtPtpSetFeatures(
 				"%!FUNC! Report REPORTID_REPORTMODE is requested"
 			);
 
+			if (pHidPacket->reportBuffer == NULL || pHidPacket->reportBufferLen < sizeof(PTP_DEVICE_INPUT_MODE_REPORT)) {
+
+				status = STATUS_BUFFER_TOO_SMALL;
+
+				goto exit;
+
+			}
+
 			PPTP_DEVICE_INPUT_MODE_REPORT devInputMode = (PPTP_DEVICE_INPUT_MODE_REPORT) pHidPacket->reportBuffer;
 			BOOLEAN bWellspringMode = pDeviceContext->IsWellspringModeOn;
 
@@ -522,6 +530,14 @@ AmtPtpSetFeatures(
 				TRACE_LEVEL_INFORMATION, TRACE_DRIVER,
 				"%!FUNC! Report REPORTID_FUNCSWITCH is requested"
 			);
+
+			if (pHidPacket->reportBuffer == NULL || pHidPacket->reportBufferLen < sizeof(PTP_DEVICE_SELECTIVE_REPORT_MODE_REPORT)) {
+
+				status = STATUS_BUFFER_TOO_SMALL;
+
+				goto exit;
+
+			}
 
 			PPTP_DEVICE_SELECTIVE_REPORT_MODE_REPORT secInput = (PPTP_DEVICE_SELECTIVE_REPORT_MODE_REPORT) pHidPacket->reportBuffer;
 

@@ -13,6 +13,7 @@ EXTERN_C_START
 #define INTERP_DCUTOFF       15.0
 #define INTERP_DELAY_MS      12
 #define INTERP_HISTORY_COUNT 8
+#define INTERP_STALE_MS     250
 
 typedef struct _INTERP_POINT
 {
