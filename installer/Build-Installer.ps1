@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '0.2.0',
+    [string]$Version = '0.2.1',
     [string]$InnoCompiler = "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
     [string]$SignTool = 'D:\Program Files\Windows Kits\10\bin\10.0.28000.0\x64\signtool.exe',
     [string]$OutputDirectory

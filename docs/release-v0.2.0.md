@@ -16,7 +16,7 @@ x64 or ARM64 driver. Driver-only ZIPs are available for manual installation.
 The x64 and ARM64 builds and regression suites passed. Magic Trackpad 3
 hardware testing on x64 confirmed USB and Bluetooth input, flick momentum,
 and Bluetooth reconnect. Live ARM64 testing remains outstanding. The Bluetooth
-filter still uses the legacy HID dispatch patch; it is replaced on `master`
+filter still uses the legacy HID dispatch patch; it is replaced in v0.2.1
 (see [v0.2.1 notes](release-v0.2.1.md)).
 
 This release uses WDK test signing. Prepare Windows to load test-signed

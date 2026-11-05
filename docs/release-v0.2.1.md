@@ -1,10 +1,15 @@
-# v0.2.1 (unreleased)
+# v0.2.1
 
-These changes are on `master` and not yet published as a release. They build
-for x64 and ARM64 and pass the regression suites. A v0.2.1 test build was
-confirmed working on x64 with Magic Trackpad 3 over USB and Bluetooth. That
+The Bluetooth filter no longer patches the shared Windows Bluetooth HID
+driver, and this release fixes bugs found in a second full code review. The
+installer still chooses the native x64 or ARM64 driver, and driver-only ZIPs
+remain available for manual installation.
+
+The x64 and ARM64 builds and regression suites passed. A pre-release test
+build was confirmed on x64 with Magic Trackpad 3 over USB and Bluetooth. That
 test ran before a reboot, so the v0.2.0 patch may still have been in memory.
 A Bluetooth check after a reboot, and live ARM64 testing, remain outstanding.
+**Reboot once after upgrading from v0.2.0 or earlier.**
 
 ## Bluetooth filter
 
@@ -67,3 +72,7 @@ A Bluetooth check after a reboot, and live ARM64 testing, remain outstanding.
 - Selective reporting (button or surface off) is ignored by the T2, SPI and
   Bluetooth drivers.
 - Contacts held across sleep are not released on resume.
+
+This release uses WDK test signing. Prepare Windows to load test-signed
+drivers and verify your download with `SHA256SUMS.txt`.
+[Installation and recovery guide](https://github.com/Sager1145/mac-precision-touchpad/blob/master/docs/installer.md).
