@@ -43,11 +43,15 @@ in the extracted directory. The repository also retains a prebuilt
 | Bluetooth off/on reconnect | Two successful hardware test cycles |
 | Installer / uninstaller | Signed Windows wizard with package ownership checks |
 
+These results are for v0.2.0. The fixes on `master` since then build for x64 and ARM64, pass the regression suites, and were confirmed over USB and Bluetooth on x64 with a v0.2.1 test build. A Bluetooth check after a reboot is still outstanding.
+
 Both transports use 125 Hz output, a 12 ms interpolation delay and measured-position history. Contact and button transitions are immediate. Lift-off is reported once at the last delivered position so Windows can preserve momentum. Prediction is bounded; there is no position low-pass filter that changes motion amplitude.
 
 Bluetooth uses device timestamps to preserve buffered packet spacing and retries transient transport errors without restarting the gesture. USB uses a high-resolution native waitable timer. Radio latency and Windows scheduling can still differ.
 
-See [USB/Bluetooth parity](docs/transport-parity.md), [Bluetooth implementation and testing](docs/bluetooth-trackpad-3.md), and the [release notes](docs/release-v0.2.0.md).
+The Bluetooth filter reads raw reports from the Windows Bluetooth HID transport. HIDCLASS hides that transport's own handler, so the filter calls the handler directly for its own requests through a private kernel-only device. Unlike upstream and v0.2.0, it no longer rewrites the shared Bluetooth HID driver's dispatch table, so other Bluetooth keyboards and mice are unaffected. A reboot clears the old patch after upgrading from v0.2.0 or earlier.
+
+See [USB/Bluetooth parity](docs/transport-parity.md), [Bluetooth implementation and testing](docs/bluetooth-trackpad-3.md), the [v0.2.0 release notes](docs/release-v0.2.0.md) and the [unreleased changes](docs/release-v0.2.1.md) on `master`.
 
 ## Device support
 
@@ -62,6 +66,7 @@ Legacy device lists and project history are preserved in the [upstream README sn
 - Check Device Manager for a healthy Apple trackpad and Precision Touchpad child device.
 - If Setup stops, read its message and logs in `C:\Program Files\Mac Precision Touchpad State`.
 - Uninstall through Windows Installed apps. Only packages recorded by this installer are removed; backups, logs and certificate trust remain for recovery.
+- The standalone `AmtPtpHidFilter.inf` in the driver ZIPs is for Bluetooth only. USB trackpads use `AmtPtpDevice.inf`.
 
 Report the Windows build, trackpad model, connection type and reproduction steps in [Issues](https://github.com/Sager1145/mac-precision-touchpad/issues). Avoid posting Bluetooth addresses or other device identifiers unnecessarily.
 

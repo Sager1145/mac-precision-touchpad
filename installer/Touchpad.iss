@@ -14,6 +14,10 @@ AppPublisherURL=https://github.com/Sager1145/mac-precision-touchpad
 AppSupportURL=https://github.com/Sager1145/mac-precision-touchpad/issues
 AppUpdatesURL=https://github.com/Sager1145/mac-precision-touchpad/releases
 DefaultDirName={autopf}\Mac Precision Touchpad
+; The installed scripts run elevated at install and uninstall. Keep them in
+; protected Program Files rather than a folder ordinary users could modify.
+DisableDirPage=yes
+UsePreviousAppDir=no
 DefaultGroupName=Mac Precision Touchpad
 DisableProgramGroupPage=yes
 DisableWelcomePage=no
@@ -64,17 +68,22 @@ begin
     '" -Action ' + Action;
   if Payload <> '' then Params := Params + ' -Payload "' + Payload + '"';
   if Trust then Params := Params + ' -TrustCertificate';
+  // Never show a previous run's error for this run.
+  DeleteFile(ExpandConstant('{autopf}\Mac Precision Touchpad State\last-error.txt'));
   Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params,
     '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 
 function FailureMessage: String;
 var
-  Detail: AnsiString;
+  Detail: TArrayOfString;
+  I: Integer;
 begin
   Result := 'Driver operation failed. Logs: ' + ExpandConstant('{autopf}\Mac Precision Touchpad State');
-  if LoadStringFromFile(ExpandConstant('{autopf}\Mac Precision Touchpad State\last-error.txt'), Detail) then
-    Result := String(Detail) + #13#10 + Result;
+  // The error file is UTF-8 with a BOM; this keeps localized messages intact.
+  if LoadStringsFromFile(ExpandConstant('{autopf}\Mac Precision Touchpad State\last-error.txt'), Detail) then
+    for I := GetArrayLength(Detail) - 1 downto 0 do
+      Result := Detail[I] + #13#10 + Result;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -87,7 +96,7 @@ begin
   ExtractTemporaryFiles('{tmp}\*.ps1');
   ExtractTemporaryFiles('{tmp}\' + Architecture + '\*');
   if not RunDriverTool('Validate', ExpandConstant('{tmp}\Manage-Driver.ps1'),
-      ExpandConstant('{tmp}\' + Architecture), False, Code) then
+      ExpandConstant('{tmp}\' + Architecture), WizardIsTaskSelected('trustcert'), Code) then
     Result := 'Unable to start Windows PowerShell.'
   else if Code <> 0 then Result := FailureMessage
   else Result := '';

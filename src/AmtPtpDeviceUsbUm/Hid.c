@@ -4,6 +4,9 @@
 #include <StaticHidRegistry.h>
 #include "Hid.tmh"
 
+static const UCHAR AmtPtpHqaBlob[] = { DEFAULT_PTP_HQA_BLOB };
+C_ASSERT(sizeof(AmtPtpHqaBlob) == sizeof(((PPTP_DEVICE_HQA_CERTIFICATION_REPORT)0)->CertificationBlob));
+
 _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS
 AmtPtpGetHidDescriptor(
@@ -480,10 +483,10 @@ AmtPtpGetStrings(
 		default:
 			TraceEvents(
 				TRACE_LEVEL_WARNING, 
-				TRACE_DRIVER, 
+				TRACE_DRIVER,
 				"%!FUNC! gets invalid string type"
 			);
-			return status;
+			return STATUS_INVALID_PARAMETER;
 	}
 
 	status = WdfUsbTargetDeviceAllocAndQueryString(
@@ -515,22 +518,40 @@ AmtPtpGetStrings(
 		TraceEvents(
 			TRACE_LEVEL_ERROR, 
 			TRACE_DRIVER, 
-			"%!FUNC! WdfMemoryCopyFromBuffer failed with %!STATUS!", 
+			"%!FUNC! WdfRequestRetrieveOutputBuffer failed with %!STATUS!",
+			status
+		);
+		WdfObjectDelete(memHandle);
+		return status;
+	}
+
+	// Copy the string itself and terminate it when the caller left room.
+	size_t stringBytes = wcharCount * sizeof(WCHAR);
+	status = WdfMemoryCopyToBuffer(
+		memHandle,
+		0,
+		pStringBuffer,
+		stringBytes
+	);
+	WdfObjectDelete(memHandle);
+	if (!NT_SUCCESS(status)) {
+		TraceEvents(
+			TRACE_LEVEL_ERROR,
+			TRACE_DRIVER,
+			"%!FUNC! WdfMemoryCopyToBuffer failed with %!STATUS!",
 			status
 		);
 		return status;
 	}
 
-	WdfMemoryCopyToBuffer(
-		memHandle,
-		0, 
-		&pStringBuffer, 
-		actualSize
-	);
+	if (actualSize >= stringBytes + sizeof(WCHAR)) {
+		((PWCHAR)pStringBuffer)[wcharCount] = UNICODE_NULL;
+		stringBytes += sizeof(WCHAR);
+	}
 
 	WdfRequestSetInformation(
-		Request, 
-		actualSize
+		Request,
+		stringBytes
 	);
 
 	TraceEvents(
@@ -821,7 +842,7 @@ AmtPtpReportFeatures(
 
 			PPTP_DEVICE_HQA_CERTIFICATION_REPORT certReport = (PPTP_DEVICE_HQA_CERTIFICATION_REPORT) packet.reportBuffer;
 
-			*certReport->CertificationBlob = DEFAULT_PTP_HQA_BLOB;
+			RtlCopyMemory(certReport->CertificationBlob, AmtPtpHqaBlob, sizeof(certReport->CertificationBlob));
 			certReport->ReportID = REPORTID_PTPHQA;
 
 			TraceEvents(
@@ -1092,6 +1113,10 @@ AmtPtpSetFeatures(
 				TRACE_DRIVER,
 				"%!FUNC! Report REPORTID_UMAPP_CONF is requested"
 			);
+			if (packet.reportBuffer == NULL || packet.reportBufferLen < sizeof(PTP_USERMODEAPP_CONF_REPORT)) {
+				status = STATUS_INVALID_BUFFER_SIZE;
+				goto exit;
+			}
 			PPTP_USERMODEAPP_CONF_REPORT umConfInput = (PPTP_USERMODEAPP_CONF_REPORT) packet.reportBuffer;
 
 			// Set value
@@ -1139,6 +1164,6 @@ exit:
 		TRACE_DRIVER, 
 		"%!FUNC! Exit"
 	);
-	return STATUS_SUCCESS;
+	return status;
 
 }

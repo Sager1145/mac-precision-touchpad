@@ -46,5 +46,10 @@ PtpFilterDetourWindowsHIDStack(
     _In_ WDFDEVICE Device
 );
 
+VOID
+PtpFilterReleaseWindowsHIDStack(
+    _In_ WDFDEVICE Device
+);
+
 
 EXTERN_C_END

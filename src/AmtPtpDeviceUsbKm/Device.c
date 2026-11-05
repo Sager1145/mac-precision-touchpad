@@ -527,11 +527,14 @@ AmtPtpSetWellspringMode(
 		return STATUS_SUCCESS;
 	}
 
+	// The mode transfer has always used a 4-byte wLength. Allocate at least
+	// that much, from nonpaged pool as USB transfer buffers require.
+	size_t modeBufferSize = max((size_t)DeviceContext->DeviceInfo->um_size, AMTPTP_MODE_TRANSFER_SIZE);
 	status = WdfMemoryCreate(
 		WDF_NO_OBJECT_ATTRIBUTES,
-		PagedPool,
+		NonPagedPoolNx,
 		POOL_TAG_PTP_CONTROL,
-		DeviceContext->DeviceInfo->um_size,
+		modeBufferSize,
 		&bufHandle,
 		&buffer
 	);
@@ -542,13 +545,13 @@ AmtPtpSetWellspringMode(
 
 	RtlZeroMemory(
 		buffer,
-		DeviceContext->DeviceInfo->um_size
+		modeBufferSize
 	);
 
 	WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(
 		&memoryDescriptor,
 		buffer,
-		sizeof(DeviceContext->DeviceInfo->um_size)
+		AMTPTP_MODE_TRANSFER_SIZE
 	);
 
 	WDF_USB_CONTROL_SETUP_PACKET_INIT(
@@ -633,7 +636,7 @@ cleanup:
 		"%!FUNC! Exit"
 	);
 
-	WdfObjectDelete(bufHandle);
+	if (bufHandle != NULL) WdfObjectDelete(bufHandle);
 	bufHandle = NULL;
 	return status;
 }

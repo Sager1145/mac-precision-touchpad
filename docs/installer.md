@@ -39,7 +39,9 @@ unchecked; select it if this public certificate is not already trusted.
    three/four-finger gestures. Configure gestures in Windows Touchpad settings.
 
 The wizard creates an Installed apps entry, a Touchpad settings shortcut and
-a copy of this guide. Files are installed in Program Files\Mac Precision Touchpad.
+a copy of this guide. Files are always installed in Program Files\Mac Precision
+Touchpad; Setup and the uninstaller run the installed scripts as administrator,
+so the folder cannot be changed to one ordinary users could modify.
 Driver backups, ownership records and logs are in:
 
     C:\Program Files\Mac Precision Touchpad State
@@ -53,9 +55,12 @@ The installer propagates failures and asks for a reboot when Windows requests it
 Use Windows Settings > Apps > Installed apps > Mac Precision Touchpad
 (Sager1145) > Uninstall. Keep another input device available: removing a driver
 can briefly disconnect the trackpad. Removal checks the recorded OEM INF name
-and its SHA-256 hash and removes only packages owned by this installer. It
-does not force-delete unrelated packages, remove shared certificate trust,
-or change Windows boot settings.
+and its SHA-256 hash and removes only packages owned by this installer. If
+Windows has since reused a recorded OEM INF name for another package, that
+entry is skipped and logged. If the ownership record is missing, no drivers
+are removed and the application is still uninstalled. Removal does not
+force-delete unrelated packages, remove shared certificate trust, or change
+Windows boot settings.
 
 Logs and backups are retained. To restore an exported driver from an elevated
 terminal, supply the actual backup directory:
@@ -66,9 +71,18 @@ An old manually installed standalone Bluetooth package can remain in the
 driver store after uninstall and may be selected again by Windows. The
 uninstaller intentionally does not remove packages it did not install.
 Setup also leaves identical packages that were staged before installation
-outside its ownership record. Earlier records in ProgramData are retained
-for reference. Use Device Manager or the original OEM INF to manage those
-packages.
+outside its ownership record. Use Device Manager or the original OEM INF to
+manage those packages.
+
+Preview versions recorded ownership in
+`C:\ProgramData\Sager1145\MacPrecisionTouchpad`. When upgrading, Setup adopts
+those entries only if each package still matches its recorded hash and is
+signed by this project's certificate. The old record is left in place for
+reference.
+
+After upgrading from v0.2.0 or earlier, reboot once. Those versions patched
+the Bluetooth HID transport's dispatch table in memory, and the patch stays
+until Windows restarts.
 
 ## Manual / unattended installation
 

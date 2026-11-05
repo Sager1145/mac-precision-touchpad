@@ -17,5 +17,9 @@ exit /b %errorlevel%
 "@
 $commandFile = Join-Path $output "build-release-$Platform.cmd"
 [IO.File]::WriteAllText($commandFile, $command, [Text.Encoding]::ASCII)
+# Windows PowerShell 5.1 turns redirected native stderr (vswhere, msbuild)
+# into a terminating error under 'Stop'. Judge the build by its exit code.
+$ErrorActionPreference = 'Continue'
 & cmd.exe /c $commandFile 2>&1 | Tee-Object -FilePath (Join-Path $output "release-$Platform.log")
+$ErrorActionPreference = 'Stop'
 if ($LASTEXITCODE -ne 0) { throw "Release $Platform build failed ($LASTEXITCODE)" }

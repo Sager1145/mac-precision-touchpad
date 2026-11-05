@@ -368,6 +368,9 @@ AmtPtpEvtDeviceD0Exit(
 	);
 
 	pDeviceContext = DeviceGetContext(Device);
+
+	// A pending power-on retry must not run, and reconfigure, while in D3.
+	WdfTimerStop(pDeviceContext->PowerOnRecoveryTimer, TRUE);
 	pDeviceContext->DeviceStatus = D3;
 
 	// Cancel all outstanding requests

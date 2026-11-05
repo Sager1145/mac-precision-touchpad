@@ -86,6 +86,8 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, DeviceGetContext)
 // Pool tags
 //
 #define POOL_TAG_PTP_CONTROL 'PTPC'
+// Wellspring mode control transfers use this wLength on every device.
+#define AMTPTP_MODE_TRANSFER_SIZE ((size_t)4)
 
 //
 // Function to initialize the device's queues and callbacks

@@ -15,7 +15,10 @@ $StateDirectory = Get-TrustedStateDirectory
 $errorFile = Join-Path $StateDirectory 'last-error.txt'
 Start-Transcript -Path (Join-Path $StateDirectory ($Action.ToLower() + '.log')) -Append
 try {
-    if ($Action -eq 'Validate') { Assert-Payload $Payload | Out-Null; Assert-TestSigning }
+    if ($Action -eq 'Validate') {
+        # Fail before files are copied, so a rejected install leaves nothing behind.
+        Assert-Payload $Payload | Out-Null; Assert-TestSigning; Assert-CertificateTrust $TrustCertificate.IsPresent
+    }
     else {
         if ($Action -eq 'Install') { $exitCode = Install-Touchpad $Payload $StateDirectory $TrustCertificate.IsPresent }
         else { $exitCode = Uninstall-Touchpad $StateDirectory }

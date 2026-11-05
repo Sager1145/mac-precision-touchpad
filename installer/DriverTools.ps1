@@ -88,7 +88,19 @@ namespace TouchpadInstaller {
     }
 }
 
+function Assert-CertificateTrust([bool]$TrustCertificate) {
+    $thumb = $script:CertificateThumbprint
+    $trusted = (Test-Path "Cert:\LocalMachine\Root\$thumb") -and
+        (Test-Path "Cert:\LocalMachine\TrustedPublisher\$thumb")
+    if (-not $trusted -and -not $TrustCertificate) {
+        throw 'The bundled test certificate is not trusted. Select the certificate trust task in Setup, or install its public certificate manually as described in the guide.'
+    }
+}
+
 function Invoke-PnpUtil([string[]]$Arguments) {
+    # Windows PowerShell 5.1 turns redirected native stderr into a terminating
+    # error under 'Stop'. Judge pnputil by its exit code instead.
+    $ErrorActionPreference = 'Continue'
     $output = & "$env:WINDIR\System32\pnputil.exe" @Arguments 2>&1
     $code = $LASTEXITCODE
     $output | ForEach-Object { Write-Host $_ }
@@ -104,15 +116,36 @@ function Find-PublishedPackage([string]$Payload) {
     } | ForEach-Object { [pscustomobject]@{Name=$_.Name; SHA256=$hash} })
 }
 
+function Test-ProjectPackage([object[]]$Drivers, [string]$Name) {
+    $driver = @($Drivers | Where-Object { $_.Driver -eq $Name }) | Select-Object -First 1
+    if (-not $driver -or [IO.Path]::GetFileName($driver.OriginalFileName) -ne 'amtptpdevice.inf') { return $false }
+    $catalog = Join-Path (Split-Path -Parent $driver.OriginalFileName) 'amtptpdevice.cat'
+    if (-not (Test-Path -LiteralPath $catalog)) { return $false }
+    $signature = Get-AuthenticodeSignature -LiteralPath $catalog
+    return ($signature.Status -eq 'Valid' -and
+        $signature.SignerCertificate.Thumbprint -eq $script:CertificateThumbprint)
+}
+
+function Get-LegacyOwnedPackages([object[]]$Drivers) {
+    # Preview builds recorded ownership under ProgramData, which ordinary users
+    # can write. Adopt an entry only while it still matches its recorded hash
+    # and is a driver-store package signed by this project's certificate.
+    $legacy = Join-Path $env:ProgramData 'Sager1145\MacPrecisionTouchpad\installed.json'
+    if (-not (Test-Path -LiteralPath $legacy)) { return @() }
+    try { $record = Get-Content -LiteralPath $legacy -Raw | ConvertFrom-Json } catch { return @() }
+    return @(@($record.Packages) | Where-Object {
+        $_ -and $_.Name -match '^oem[0-9]+\.inf$' -and $_.SHA256 -and
+        (Test-Path -LiteralPath (Join-Path "$env:WINDIR\INF" $_.Name)) -and
+        (Get-FileHash -LiteralPath (Join-Path "$env:WINDIR\INF" $_.Name)).Hash -eq $_.SHA256 -and
+        (Test-ProjectPackage $Drivers $_.Name)
+    } | ForEach-Object { [pscustomobject]@{Name=$_.Name; SHA256=$_.SHA256} })
+}
+
 function Install-Touchpad([string]$Payload, [string]$StateDirectory, [bool]$TrustCertificate) {
     $manifest = Assert-Payload $Payload
     Assert-TestSigning
     $thumb = $script:CertificateThumbprint
-    $trusted = (Test-Path "Cert:\LocalMachine\Root\$thumb") -and
-        (Test-Path "Cert:\LocalMachine\TrustedPublisher\$thumb")
-    if (-not $trusted -and -not $TrustCertificate) {
-        throw 'The bundled test certificate is not trusted. Select the certificate trust task in Setup, or install its public certificate manually as described in the guide.'
-    }
+    Assert-CertificateTrust $TrustCertificate
     if ($TrustCertificate) {
         foreach ($store in @('Root','TrustedPublisher')) {
             Import-Certificate -FilePath (Join-Path $Payload 'AmtPtpDeviceTest.cer') -CertStoreLocation "Cert:\LocalMachine\$store" | Out-Null
@@ -128,7 +161,8 @@ function Install-Touchpad([string]$Payload, [string]$StateDirectory, [bool]$Trus
     $backup = Join-Path $StateDirectory ('backup-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss'))
     New-Item -ItemType Directory -Force $backup | Out-Null
     # Preserve any existing driver from this family before rebinding devices.
-    $previous = @(Get-WindowsDriver -Online -All | Where-Object {
+    $drivers = @(Get-WindowsDriver -Online -All)
+    $previous = @($drivers | Where-Object {
         [IO.Path]::GetFileName($_.OriginalFileName) -in @('amtptpdevice.inf','amtptphidfilter.inf')
     })
     foreach ($driver in $previous) { Invoke-PnpUtil @('/export-driver', $driver.Driver, $backup) | Out-Null }
@@ -142,6 +176,7 @@ function Install-Touchpad([string]$Payload, [string]$StateDirectory, [bool]$Trus
         $old = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
         $owned += @($old.Packages | Where-Object { $_.Name -notin @($owned | ForEach-Object Name) })
     }
+    $owned += @(Get-LegacyOwnedPackages $drivers | Where-Object { $_.Name -notin @($owned | ForEach-Object Name) })
     $temporaryState = Join-Path $StateDirectory ([guid]::NewGuid().ToString('N') + '.json')
     [pscustomobject]@{Version=$manifest.Version; Packages=$owned; Backup=$backup; RebootRequired=($code -eq 3010)} |
         ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $temporaryState -Encoding UTF8
@@ -154,19 +189,29 @@ function Install-Touchpad([string]$Payload, [string]$StateDirectory, [bool]$Trus
 
 function Uninstall-Touchpad([string]$StateDirectory) {
     $path = Join-Path $StateDirectory 'installed.json'
-    if (-not (Test-Path -LiteralPath $path)) { throw 'Installation ownership record missing; no drivers were removed.' }
+    if (-not (Test-Path -LiteralPath $path)) {
+        # Nothing is recorded as ours, so there is nothing to remove. Do not
+        # block removal of the application itself.
+        Write-Host 'No installation ownership record; no drivers were removed.'
+        return 0
+    }
     $state = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
     # Validate every entry before deleting any package. Never remove by device
     # vendor wildcard, never force-delete, and never touch another fork's INF.
-    foreach ($package in $state.Packages) {
+    $remove = @()
+    foreach ($package in @($state.Packages)) {
         if ($package.Name -notmatch '^oem[0-9]+\.inf$') { throw 'Invalid published INF in ownership record.' }
         $inf = Join-Path "$env:WINDIR\INF" $package.Name
-        if ((Test-Path -LiteralPath $inf) -and (Get-FileHash -LiteralPath $inf).Hash -ne $package.SHA256) {
-            throw "Driver ownership changed: $($package.Name). No drivers were removed."
+        if (-not (Test-Path -LiteralPath $inf)) { continue }
+        if ((Get-FileHash -LiteralPath $inf).Hash -ne $package.SHA256) {
+            # Windows reuses freed oemNN names. This one now belongs elsewhere.
+            Write-Host "Skipping $($package.Name): it no longer matches the installed package."
+            continue
         }
+        $remove += $package
     }
     $reboot = 0
-    foreach ($package in $state.Packages) {
+    foreach ($package in $remove) {
         if (Test-Path -LiteralPath (Join-Path "$env:WINDIR\INF" $package.Name)) {
             $code = Invoke-PnpUtil @('/delete-driver', $package.Name, '/uninstall')
             if ($code -eq 3010) { $reboot = 3010 }

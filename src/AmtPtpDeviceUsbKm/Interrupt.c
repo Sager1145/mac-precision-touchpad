@@ -83,7 +83,7 @@ exit:
 		"%!FUNC! Exit"
 	);
 
-	return STATUS_SUCCESS;
+	return status;
 }
 
 VOID

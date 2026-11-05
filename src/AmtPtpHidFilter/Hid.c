@@ -3,6 +3,9 @@
 #include <Driver.h>
 #include "Hid.tmh"
 
+static const UCHAR PtpFilterHqaBlob[] = { DEFAULT_PTP_HQA_BLOB };
+C_ASSERT(sizeof(PtpFilterHqaBlob) == sizeof(((PPTP_DEVICE_HQA_CERTIFICATION_REPORT)0)->CertificationBlob));
+
 NTSTATUS
 PtpFilterGetHidDescriptor(
 	_In_ WDFDEVICE Device,
@@ -200,7 +203,7 @@ PtpFilterGetHidFeatures(
 	}
 
 	hidContent = (PHID_XFER_PACKET)WdfRequestWdmGetIrp(Request)->UserBuffer;
-	if (hidContent == NULL)
+	if (hidContent == NULL || hidContent->reportBuffer == NULL)
 	{
 		status = STATUS_INVALID_DEVICE_REQUEST;
 		goto exit;
@@ -244,7 +247,7 @@ PtpFilterGetHidFeatures(
 		}
 
 		PPTP_DEVICE_HQA_CERTIFICATION_REPORT certReport = (PPTP_DEVICE_HQA_CERTIFICATION_REPORT)hidContent->reportBuffer;
-		*certReport->CertificationBlob = DEFAULT_PTP_HQA_BLOB;
+		RtlCopyMemory(certReport->CertificationBlob, PtpFilterHqaBlob, sizeof(certReport->CertificationBlob));
 		certReport->ReportID = REPORTID_PTPHQA;
 
 		TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_HID, "%!FUNC! Report REPORTID_PTPHQA is fulfilled");
@@ -257,6 +260,8 @@ PtpFilterGetHidFeatures(
 		goto exit;
 	}
 	}
+
+	WdfRequestSetInformation(Request, reportSize);
 
 exit:
 	TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_HID, "%!FUNC! Exit");

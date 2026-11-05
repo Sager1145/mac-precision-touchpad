@@ -223,7 +223,7 @@ PtpFilterResamplingTimerCallback(_In_ WDFTIMER Timer)
     KeAcquireSpinLock(&ctx->InputLock, &oldIrql);
     LARGE_INTEGER now = KeQueryPerformanceCounter(NULL);
     if (ctx->QpcFrequency > 0 &&
-        (now.QuadPart - ctx->LastEmitTime) * 1000 / ctx->QpcFrequency >= PTP_RESAMPLE_PERIOD_MS - 1)
+        now.QuadPart - ctx->LastEmitTime >= ctx->QpcFrequency / 1000 * (PTP_RESAMPLE_PERIOD_MS - 1))
         drain = PtpFilterPrepareDelivery(ctx, now.QuadPart, TRUE);
     KeReleaseSpinLock(&ctx->InputLock, oldIrql);
     if (drain) PtpFilterDrainDelivery(ctx);

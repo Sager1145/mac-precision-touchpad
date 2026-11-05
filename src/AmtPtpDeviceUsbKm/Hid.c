@@ -1,6 +1,9 @@
 #include "Driver.h"
 #include "hid.tmh"
 
+static const UCHAR AmtPtpHqaBlob[] = { DEFAULT_PTP_HQA_BLOB };
+C_ASSERT(sizeof(AmtPtpHqaBlob) == sizeof(((PPTP_DEVICE_HQA_CERTIFICATION_REPORT)0)->CertificationBlob));
+
 #ifndef _AAPL_HID_DESCRIPTOR_H_
 #define _AAPL_HID_DESCRIPTOR_H_
 
@@ -317,7 +320,7 @@ AmtPtpReportFeatures(
 	}
 
 	pHidPacket = (PHID_XFER_PACKET)WdfRequestWdmGetIrp(Request)->UserBuffer;
-	if (pHidPacket == NULL)
+	if (pHidPacket == NULL || pHidPacket->reportBuffer == NULL)
 	{
 		status = STATUS_INVALID_DEVICE_REQUEST;
 		goto exit;
@@ -385,7 +388,7 @@ AmtPtpReportFeatures(
 			}
 
 			PPTP_DEVICE_HQA_CERTIFICATION_REPORT certReport = (PPTP_DEVICE_HQA_CERTIFICATION_REPORT)pHidPacket->reportBuffer;
-			*certReport->CertificationBlob = DEFAULT_PTP_HQA_BLOB;
+			RtlCopyMemory(certReport->CertificationBlob, AmtPtpHqaBlob, sizeof(certReport->CertificationBlob));
 			certReport->ReportID = REPORTID_PTPHQA;
 
 			TraceEvents(
@@ -407,6 +410,8 @@ AmtPtpReportFeatures(
 			goto exit;
 		}
 	}
+
+	WdfRequestSetInformation(Request, ReportSize);
 
 exit:
 	TraceEvents(

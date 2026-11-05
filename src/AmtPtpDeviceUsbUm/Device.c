@@ -373,11 +373,14 @@ AmtPtpGetWellspringMode(
 		return STATUS_SUCCESS;
 	}
 
+	// The mode transfer has always used a 4-byte wLength, which the devices
+	// accept. Allocate at least that much so the transfer stays in bounds.
+	size_t modeBufferSize = max((size_t)DeviceContext->DeviceInfo->um_size, AMTPTP_MODE_TRANSFER_SIZE);
 	status = WdfMemoryCreate(
 		WDF_NO_OBJECT_ATTRIBUTES,
 		PagedPool,
 		POOL_TAG_PTP_CONTROL,
-		DeviceContext->DeviceInfo->um_size,
+		modeBufferSize,
 		&bufHandle,
 		&buffer
 	);
@@ -388,13 +391,13 @@ AmtPtpGetWellspringMode(
 
 	RtlZeroMemory(
 		buffer,
-		DeviceContext->DeviceInfo->um_size
+		modeBufferSize
 	);
 
 	WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(
 		&memoryDescriptor,
 		buffer,
-		sizeof(DeviceContext->DeviceInfo->um_size)
+		AMTPTP_MODE_TRANSFER_SIZE
 	);
 
 	WDF_USB_CONTROL_SETUP_PACKET_INIT(
@@ -443,7 +446,7 @@ cleanup:
 		"%!FUNC! Exit"
 	);
 
-	WdfObjectDelete(bufHandle);
+	if (bufHandle != NULL) WdfObjectDelete(bufHandle);
 	return status;
 
 }
@@ -476,12 +479,13 @@ AmtPtpSetWellspringMode(
 		return STATUS_SUCCESS;
 	}
 
+	size_t modeBufferSize = max((size_t)DeviceContext->DeviceInfo->um_size, AMTPTP_MODE_TRANSFER_SIZE);
 	status = WdfMemoryCreate(
-		WDF_NO_OBJECT_ATTRIBUTES, 
-		PagedPool, 
-		POOL_TAG_PTP_CONTROL, 
-		DeviceContext->DeviceInfo->um_size, 
-		&bufHandle, 
+		WDF_NO_OBJECT_ATTRIBUTES,
+		PagedPool,
+		POOL_TAG_PTP_CONTROL,
+		modeBufferSize,
+		&bufHandle,
 		&buffer
 	);
 
@@ -490,14 +494,14 @@ AmtPtpSetWellspringMode(
 	}
 
 	RtlZeroMemory(
-		buffer, 
-		DeviceContext->DeviceInfo->um_size
+		buffer,
+		modeBufferSize
 	);
 
 	WDF_MEMORY_DESCRIPTOR_INIT_BUFFER(
-		&memoryDescriptor, 
-		buffer, 
-		sizeof(DeviceContext->DeviceInfo->um_size)
+		&memoryDescriptor,
+		buffer,
+		AMTPTP_MODE_TRANSFER_SIZE
 	);
 
 	WDF_USB_CONTROL_SETUP_PACKET_INIT(
@@ -582,7 +586,7 @@ cleanup:
 		"%!FUNC! Exit"
 	);
 
-	WdfObjectDelete(bufHandle);
+	if (bufHandle != NULL) WdfObjectDelete(bufHandle);
 	return status;
 
 }
@@ -616,12 +620,16 @@ AmtPtpEvtDeviceD0Entry(
 			"%!FUNC! <--AmtPtpDeviceEvtDeviceD0Entry - Start Wellspring Mode"
 		);
 
-		status = AmtPtpSetWellspringMode(
-			pDeviceContext,
-			TRUE
-		);
+		// Input is dropped until the mode switch succeeds, so retry a transient
+		// control-transfer failure instead of leaving the trackpad silent.
+		for (int attempt = 0; attempt < 3; attempt++) {
+			if (attempt > 0) Sleep(50);
+			status = AmtPtpSetWellspringMode(
+				pDeviceContext,
+				TRUE
+			);
+			if (NT_SUCCESS(status)) break;
 
-		if (!NT_SUCCESS(status)) {
 			TraceEvents(
 				TRACE_LEVEL_WARNING,
 				TRACE_DRIVER,
@@ -715,17 +723,19 @@ AmtPtpEvtDeviceD0Exit(
 
 	pDeviceContext = DeviceGetContext(Device);
 
-	//
-	// Stop the resampling timer.
-	//
-	AmtPtpStopResampling(pDeviceContext);
-	pDeviceContext->InterpHasSample = FALSE;
-
-	// Stop IO Pipe.
+	// Stop IO Pipe first, so no packet can re-arm interpolation afterwards.
 	WdfIoTargetStop(WdfUsbTargetPipeGetIoTarget(
 		pDeviceContext->InterruptPipe),
 		WdfIoTargetCancelSentIo
 	);
+
+	//
+	// Stop the resampling timer.
+	//
+	AmtPtpStopResampling(pDeviceContext);
+	AcquireSRWLockExclusive(&pDeviceContext->InterpolationLock);
+	pDeviceContext->InterpHasSample = FALSE;
+	ReleaseSRWLockExclusive(&pDeviceContext->InterpolationLock);
 
 	// Cancel Wellspring mode.
 	TraceEvents(

@@ -30,6 +30,7 @@ PtpFilterCreateDevice(
     pnpPowerCallbacks.EvtDeviceD0Exit = PtpFilterDeviceD0Exit;
     pnpPowerCallbacks.EvtDeviceSelfManagedIoInit = PtpFilterSelfManagedIoInit;
     pnpPowerCallbacks.EvtDeviceSelfManagedIoRestart = PtpFilterSelfManagedIoRestart;
+    pnpPowerCallbacks.EvtDeviceSelfManagedIoCleanup = PtpFilterSelfManagedIoCleanup;
     WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnpPowerCallbacks);
 
     // Create WDF device object
@@ -137,10 +138,8 @@ PtpFilterPrepareHardware(
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Entry");
     deviceContext = PtpFilterGetContext(Device);
 
-    // Initialize IDs, set to zero
-    deviceContext->VendorID = 0;
-    deviceContext->ProductID = 0;
-    deviceContext->VersionNumber = 0;
+    // Keep the IDs read in SelfManagedIoInit. KMDF does not call it again
+    // after a PnP stop/start, and SelfManagedIoRestart needs them.
     deviceContext->DeviceConfigured = FALSE;
 
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Exit, Status = %!STATUS!", status);
@@ -158,11 +157,17 @@ PtpFilterDeviceD0Entry(
     NTSTATUS status = WdfIoTargetStart(WdfDeviceGetIoTarget(Device));
     if (!NT_SUCCESS(status)) return status;
     PDEVICE_CONTEXT ctx = PtpFilterGetContext(Device);
+    // The private transport target is not power managed by the framework.
+    if (ctx->HidIoTarget != NULL) {
+        status = WdfIoTargetStart(ctx->HidIoTarget);
+        if (!NT_SUCCESS(status)) return status;
+    }
     LARGE_INTEGER frequency;
     ctx->LastReportTime = KeQueryPerformanceCounter(&frequency);
     ctx->QpcFrequency = frequency.QuadPart;
     ctx->LastScanTicks = 0;
-    ctx->LastEmitTime = 0;
+    ctx->LastEmitTime = ctx->LastReportTime.QuadPart;
+    ctx->ReadErrorCount = 0;
     RtlZeroMemory(&ctx->LastDeliveredReport, sizeof(ctx->LastDeliveredReport));
     RtlZeroMemory(&ctx->LastPhysicalReport, sizeof(ctx->LastPhysicalReport));
     RtlZeroMemory(&ctx->Resampling, sizeof(ctx->Resampling));
@@ -200,6 +205,9 @@ PtpFilterDeviceD0Exit(
     WdfTimerStop(deviceContext->ResamplingTimer, TRUE);
     // Only the worker submits reads. Flush it before cancelling a sent read.
     WdfWorkItemFlush(deviceContext->HidTransportRecoveryWorkItem);
+    if (deviceContext->HidIoTarget != NULL) {
+        WdfIoTargetStop(deviceContext->HidIoTarget, WdfIoTargetCancelSentIo);
+    }
     WdfIoTargetStop(WdfDeviceGetIoTarget(Device), WdfIoTargetCancelSentIo);
     KeWaitForSingleObject(&deviceContext->TransportIdle, Executive, KernelMode, FALSE, NULL);
 
@@ -496,9 +504,21 @@ PtpFilterRecoveryTimerCallback(
             return;
         }
         deviceContext->DeviceConfigured = TRUE;
+        deviceContext->ReadErrorCount = 0;
         WdfTimerStart(deviceContext->ResamplingTimer, WDF_REL_TIMEOUT_IN_MS(PTP_RESAMPLE_PERIOD_MS));
         KeReleaseSpinLock(&deviceContext->InputLock, irql);
     }
     TraceLoggingWrite(g_PtpBluetoothTrace, "RecoveryReadIssued");
     WdfWorkItemEnqueue(deviceContext->HidTransportRecoveryWorkItem);
+}
+
+VOID
+PtpFilterSelfManagedIoCleanup(
+    _In_ WDFDEVICE Device
+)
+{
+    PAGED_CODE();
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Entry");
+    // All I/O has stopped by now; release the private transport route.
+    PtpFilterReleaseWindowsHIDStack(Device);
 }
