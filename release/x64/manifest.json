@@ -1,21 +1,21 @@
 ﻿{
     "Version":  "0.2.0-preview.1",
-    "SourceCommit":  "943e34ab1f97eaaf3391f95b64cbaa972de4d457",
+    "SourceCommit":  "f2a64950ccb7d4b4a36de0e7f3294e705b5dceab",
     "Architecture":  "x64",
     "Signing":  "WDK test-signed",
     "CertificateThumbprint":  "94A13BEE28D788FC4A7FA91C568968C7DBADDC69",
     "Files":  [
                   {
                       "Name":  "amtptpdevice.cat",
-                      "SHA256":  "EE20F52E155F7C13F505C26DBD763D0E9963432EA56764600955B20FB52B60BD"
+                      "SHA256":  "92DB761EEB381DD0548681638B8DC0AF47E8C64B7AD86071E8ACCA92F57BFE62"
                   },
                   {
                       "Name":  "AmtPtpDevice.inf",
-                      "SHA256":  "45B27FAD83FDB1383834D8285536ABD73A10867B07D866C46EE8DD141CB41270"
+                      "SHA256":  "A1F5D572269A21D16BE25539CA6FDB497E2CA3FD724E599A86FB8A77F33A9DAF"
                   },
                   {
                       "Name":  "AmtPtpDeviceSpiKm.sys",
-                      "SHA256":  "EEDED43E43C332F5D9BD568E14D71BF2198BD162E91BC50874463CD16D292707"
+                      "SHA256":  "0D4CED97337A181B3515C8207897B203D354C8C1220EA88746B0E7ADE2237E8D"
                   },
                   {
                       "Name":  "AmtPtpDeviceTest.cer",
@@ -23,23 +23,27 @@
                   },
                   {
                       "Name":  "AmtPtpDeviceUsbKm.sys",
-                      "SHA256":  "909F109504690DA3E24AC787F769C2468FBAB38811421098201CAE3512B500F3"
+                      "SHA256":  "A09032F5CF1048DA50DCC3CC4C79432E624D4A2F0A0D3F1BBB54FF1F34D8E2BD"
                   },
                   {
                       "Name":  "AmtPtpDeviceUsbUm.dll",
-                      "SHA256":  "9FA7A8D2CA8B9542ABDAB5ECC501558120281110D0C5CC96F88BEF881FB3CCF5"
+                      "SHA256":  "AED9B3906457EA0042662D3095EA74747CBE8865734CB36F46F304426B17F60B"
                   },
                   {
                       "Name":  "amtptphidfilter.cat",
-                      "SHA256":  "78CFEC70A027FE04105687E86896EA42E7CA1F0CB2F3AC8FBF74E6B6D6012EDB"
+                      "SHA256":  "A91662643B04F0EEED4D6E3AEF7C432F9FFCBD3B43FA785FF14F86ED4C026E6A"
                   },
                   {
                       "Name":  "AmtPtpHidFilter.inf",
-                      "SHA256":  "C5BFAD8B0C0CC70BC85256A2C864009E2E94CF299E5BDF4DF709207B05A3AB49"
+                      "SHA256":  "742AD166DD616B08C7B7AB518157F7FA0F2471F161AE5241AD523EE9CD669CBA"
                   },
                   {
                       "Name":  "AmtPtpHidFilter.sys",
-                      "SHA256":  "12CEB44A70DE73F990120E63F596B5EDB05E9639ADFD93F678E68B0A525F3327"
+                      "SHA256":  "5B60DF4931835C9427C6B6C6134720CCECD88510692423E7AD85F15ABA00398A"
+                  },
+                  {
+                      "Name":  "manifest.json",
+                      "SHA256":  "BBA10A5EFC360655B84AC22FAAFB3E947F1095FCB54BFD2ED58B2F39E7FA25A7"
                   }
               ]
 }

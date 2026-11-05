@@ -8,7 +8,7 @@ Class = HIDClass
 ClassGuid = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
 Provider = %ManufacturerName%
 CatalogFile = AmtPtpDevice.cat
-DriverVer = 11/04/2026,20.17.53.962
+DriverVer = 11/04/2026,20.41.12.974
 PnpLockdown = 1
 
 [DestinationDirs]
@@ -254,7 +254,7 @@ KmdfLibraryVersion = 1.15
 [Strings]
 REG_MULTI_SZ = 0x00010000
 SPSVCINST_ASSOCSERVICE = 0x00000002
-ManufacturerName = "Bingxing Wang"
+ManufacturerName = "Bingxing Wang, Sager1145"
 ClassName = "Universal Serial Bus devices"
 DiskName = "AmtPtpDeviceUsbKm Installation Disk"
 AmtPtpDeviceUsbKm.DeviceDesc = "Apple USB Precision Touchpad Device (Kernel-mode)"
