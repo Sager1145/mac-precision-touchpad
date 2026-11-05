@@ -29,6 +29,17 @@ To remove this package, use the exact published INF name recorded above:
 
     pnputil /delete-driver oemNN.inf /uninstall
 
+Optional: show the Bluetooth battery level in Windows Settings. Copy
+AmtPtpBatteryService.exe to a folder only administrators can change, such as
+C:\Program Files\Mac Precision Touchpad\driver, then in an administrator
+terminal:
+
+    sc.exe create AmtPtpBattery binPath= "\"C:\Program Files\Mac Precision Touchpad\driver\AmtPtpBatteryService.exe\"" start= auto
+    sc.exe privs AmtPtpBattery SeChangeNotifyPrivilege
+    sc.exe start AmtPtpBattery
+
+To remove it: sc.exe stop AmtPtpBattery, then sc.exe delete AmtPtpBattery.
+
 Uninstalling may briefly disconnect the trackpad. Keep another input device
 available. Back up existing packages with pnputil /export-driver before
 replacing them. The standalone AmtPtpHidFilter.inf is only for Bluetooth;

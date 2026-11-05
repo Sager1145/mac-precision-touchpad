@@ -8,7 +8,7 @@ Class = HIDClass
 ClassGuid = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
 Provider=%ManufacturerName%
 CatalogFile=AmtPtpHidFilter.cat
-DriverVer = 11/05/2026,3.28.5.889
+DriverVer = 11/05/2026,12.39.47.405
 PnpLockdown=1
 
 [DestinationDirs]
@@ -48,8 +48,14 @@ AmtPtpHidFilter.sys  = 1,,
 [FilterDriver_Payload]
 AmtPtpHidFilter.sys
 
+; Show the trackpad as a touchpad, not a mouse, in Settings. Container
+; metadata is applied on Windows 11 24H2 (26100.3323) and later.
+[AmtPtp_TouchpadContainer]
+ContainerCategories,,,,Input.Digitizer.Touchpad
+
 [AmtPtpHidFilter_MiniPortDevice.NT]
 CopyFiles=FilterDriver_Payload
+AddProperty=AmtPtp_TouchpadContainer
 
 [AmtPtpHidFilter_NullDevice]
 ; Nothing!
