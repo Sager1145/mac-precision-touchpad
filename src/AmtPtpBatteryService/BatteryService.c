@@ -1,18 +1,18 @@
-// BatteryService.c: Magic Trackpad battery level for the Windows Bluetooth
-// device list.
+// BatteryService.c: Magic Trackpad battery level in Settings > Bluetooth &
+// devices, over USB.
 //
-// Windows reads battery levels natively only from Bluetooth LE devices and
-// hands-free headsets. A Magic Trackpad on classic Bluetooth reports its
-// charge in input report 0x90 of its vendor collection (usage page 0xFF00,
-// usage 0x14): [0x90][present/charging/discharging bits][percent].
-//
-// The report is requested through the standard HID API, which goes through
-// HIDCLASS to HidBth as Windows expects. The kernel filter must not request it
-// itself: a GET_REPORT it sends straight to HidBth crashes Windows.
-//
-// The level is written to the trackpad's touch collection, where Settings >
-// Bluetooth & devices shows it. Writing a device property needs
+// The trackpad reports its charge in input report 0x90:
+// [0x90][present/charging/discharging bits][percent]. Over USB it is on
+// interface 0, which runs WinUSB (its HID descriptor is invalid for Windows),
+// so this service asks for it with a HID class GET_REPORT and writes the level
+// to that interface's device node. Writing a device property needs
 // administrator rights, so this runs as a service.
+//
+// Bluetooth is not handled here. AmtPtpHidFilter takes the report the
+// trackpad sends on its own from the input stream (Battery.c). Nothing may ask
+// a Bluetooth trackpad for it: a GET_INPUT_REPORT that reaches HidBth, even
+// through HIDCLASS from HidD_GetInputReport, can crash Windows in
+// hidbth!HidBthGetReportFlowCompletion (it reads a missing MDL).
 
 #include <windows.h>
 #include <cfgmgr32.h>
@@ -20,6 +20,7 @@
 #include <hidpi.h>
 #include <initguid.h>
 #include <devpkey.h>
+#include <winusb.h>
 #include <stdio.h>
 #include <wchar.h>
 
@@ -36,6 +37,11 @@
 // public headers.
 static const DEVPROPKEY BatteryLevelKey = {
     { 0x104ea319, 0x6ee2, 0x4701, { 0xbd, 0x47, 0x8d, 0xdb, 0xf4, 0x25, 0xbb, 0xe5 } }, 2 };
+
+// USB: interface 0 (the battery report's interface) runs WinUSB with this interface GUID
+// (AmtPtpDevice.inf, AmtPtpBattery_UsbReg). Its HID report descriptor is invalid for
+// Windows' HID parser, so the report is asked for with a HID class GET_REPORT instead.
+DEFINE_GUID(GUID_AMTPTP_BATTERY_USB, 0x3d6e6b1c, 0x9a4f, 0x4c2e, 0x8b, 0x7d, 0x5e, 0x1f, 0x2a, 0x9c, 0x03, 0x24);
 
 static SERVICE_STATUS_HANDLE g_statusHandle;
 static SERVICE_STATUS g_status;
@@ -55,88 +61,6 @@ Log(_In_z_ _Printf_format_string_ const wchar_t* format, ...)
     else OutputDebugStringW(message);
 }
 
-static BOOL
-ContainsInsensitive(_In_z_ const wchar_t* text, _In_z_ const wchar_t* needle)
-{
-    size_t length = wcslen(needle);
-    for (; *text; text++) {
-        if (_wcsnicmp(text, needle, length) == 0) return TRUE;
-    }
-    return FALSE;
-}
-
-static BOOL
-IsTrackpadPath(_In_z_ const wchar_t* path)
-{
-    // Bluetooth HID service UUID with Apple's Bluetooth vendor ID, then the
-    // Magic Trackpad 2 or Magic Trackpad USB-C product ID.
-    return ContainsInsensitive(path, L"{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&0265") ||
-        ContainsInsensitive(path, L"{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004C_PID&0324");
-}
-
-static BOOL
-ReadBatteryLevel(_In_z_ const wchar_t* path, _Out_ BYTE* level)
-{
-    HANDLE device;
-    HIDD_ATTRIBUTES attributes;
-    PHIDP_PREPARSED_DATA preparsed;
-    HIDP_CAPS caps;
-    BYTE report[64];
-    BOOL ok = FALSE;
-
-    *level = 0;
-    device = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL, OPEN_EXISTING, 0, NULL);
-    if (device == INVALID_HANDLE_VALUE) return FALSE;
-
-    attributes.Size = sizeof(attributes);
-    if (HidD_GetAttributes(device, &attributes) && attributes.VendorID == APPLE_BLUETOOTH_VID &&
-        HidD_GetPreparsedData(device, &preparsed)) {
-        if (HidP_GetCaps(preparsed, &caps) == HIDP_STATUS_SUCCESS &&
-            caps.UsagePage == BATTERY_USAGE_PAGE && caps.Usage == BATTERY_USAGE &&
-            caps.InputReportByteLength >= 3 && caps.InputReportByteLength <= sizeof(report)) {
-            ZeroMemory(report, sizeof(report));
-            report[0] = BATTERY_REPORT_ID;
-            if (HidD_GetInputReport(device, report, caps.InputReportByteLength) &&
-                report[0] == BATTERY_REPORT_ID && report[2] <= 100) {
-                *level = report[2];
-                ok = TRUE;
-            }
-        }
-        HidD_FreePreparsedData(preparsed);
-    }
-    CloseHandle(device);
-    return ok;
-}
-
-static BOOL
-FindTouchCollection(_In_z_ const wchar_t* path, _Out_ DEVINST* target)
-{
-    wchar_t instanceId[MAX_DEVICE_ID_LEN];
-    wchar_t childId[MAX_DEVICE_ID_LEN];
-    DEVPROPTYPE type;
-    ULONG size = sizeof(instanceId);
-    DEVINST vendorCollection, parent, child;
-
-    if (CM_Get_Device_Interface_PropertyW(path, &DEVPKEY_Device_InstanceId, &type,
-        (PBYTE)instanceId, &size, 0) != CR_SUCCESS || type != DEVPROP_TYPE_STRING) return FALSE;
-    if (CM_Locate_DevNodeW(&vendorCollection, instanceId, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS) return FALSE;
-
-    // Settings showed the level from the touch collection (Col01), a sibling
-    // of this vendor collection. Fall back to this node if it is missing.
-    *target = vendorCollection;
-    if (CM_Get_Parent(&parent, vendorCollection, 0) != CR_SUCCESS) return TRUE;
-    if (CM_Get_Child(&child, parent, 0) != CR_SUCCESS) return TRUE;
-    do {
-        if (CM_Get_Device_IDW(child, childId, ARRAYSIZE(childId), 0) == CR_SUCCESS &&
-            ContainsInsensitive(childId, L"&COL01\\")) {
-            *target = child;
-            break;
-        }
-    } while (CM_Get_Sibling(&child, child, 0) == CR_SUCCESS);
-    return TRUE;
-}
-
 static void
 PublishBatteryLevel(_In_ DEVINST target, _In_ BYTE level)
 {
@@ -151,36 +75,75 @@ PublishBatteryLevel(_In_ DEVINST target, _In_ BYTE level)
     Log(L"Battery %u%%, publish result %lu", level, result);
 }
 
-static void
-ScanTrackpads(void)
+// USB: GET_REPORT(Input, 0x90) on interface 0 through WinUSB. [0x90][status][charge 0-100]
+static BOOL
+ReadUsbBatteryLevel(_In_z_ const wchar_t* path, _Out_ BYTE* level)
 {
-    GUID hidGuid;
+    HANDLE device;
+    WINUSB_INTERFACE_HANDLE usb;
+    WINUSB_SETUP_PACKET setup;
+    BYTE report[64];
+    ULONG transferred = 0;
+    BOOL ok = FALSE;
+
+    *level = 0;
+    device = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL); // WinUSB requires overlapped handles
+    if (device == INVALID_HANDLE_VALUE) return FALSE;
+    if (WinUsb_Initialize(device, &usb)) {
+        ZeroMemory(&setup, sizeof(setup));
+        setup.RequestType = 0xA1;                        // device-to-host, class, interface
+        setup.Request = 0x01;                            // HID GET_REPORT
+        setup.Value = (0x01 << 8) | BATTERY_REPORT_ID;  // input report 0x90
+        setup.Index = 0;                                 // interface 0
+        setup.Length = sizeof(report);
+        ZeroMemory(report, sizeof(report));
+        if (WinUsb_ControlTransfer(usb, setup, report, sizeof(report), &transferred, NULL) &&
+            transferred >= 3 && report[0] == BATTERY_REPORT_ID && report[2] >= 1 && report[2] <= 100) {
+            *level = report[2];
+            ok = TRUE;
+        }
+        WinUsb_Free(usb);
+    }
+    CloseHandle(device);
+    return ok;
+}
+
+// Every trackpad on USB: reads the level and writes it to the battery interface's own device
+// node, which is in the trackpad's USB device container (the "Magic Trackpad" entry).
+static void
+ScanUsbTrackpads(void)
+{
     ULONG length = 0;
     wchar_t* list;
     const wchar_t* path;
 
-    HidD_GetHidGuid(&hidGuid);
-    if (CM_Get_Device_Interface_List_SizeW(&length, &hidGuid, NULL,
+    if (CM_Get_Device_Interface_List_SizeW(&length, (LPGUID)&GUID_AMTPTP_BATTERY_USB, NULL,
         CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != CR_SUCCESS || length < 2) return;
     list = (wchar_t*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, length * sizeof(wchar_t));
     if (list == NULL) return;
-    if (CM_Get_Device_Interface_ListW(&hidGuid, NULL, list, length,
+    if (CM_Get_Device_Interface_ListW((LPGUID)&GUID_AMTPTP_BATTERY_USB, NULL, list, length,
         CM_GET_DEVICE_INTERFACE_LIST_PRESENT) == CR_SUCCESS) {
         for (path = list; *path; path += wcslen(path) + 1) {
-            BYTE level;
+            wchar_t instanceId[MAX_DEVICE_ID_LEN];
+            DEVPROPTYPE type;
+            ULONG size = sizeof(instanceId);
             DEVINST target;
-            // Only open the trackpad's own collections, never other HID devices.
-            if (!IsTrackpadPath(path)) continue;
-            if (!ReadBatteryLevel(path, &level)) continue;
-            Log(L"Trackpad battery %u%%", level);
-            if (FindTouchCollection(path, &target)) PublishBatteryLevel(target, level);
+            BYTE level;
+            if (!ReadUsbBatteryLevel(path, &level)) continue;
+            Log(L"USB trackpad battery %u%%", level);
+            if (CM_Get_Device_Interface_PropertyW(path, &DEVPKEY_Device_InstanceId, &type,
+                (PBYTE)instanceId, &size, 0) == CR_SUCCESS && type == DEVPROP_TYPE_STRING &&
+                CM_Locate_DevNodeW(&target, instanceId, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS) {
+                PublishBatteryLevel(target, level);
+            }
         }
     }
     HeapFree(GetProcessHeap(), 0, list);
 }
 
 static DWORD CALLBACK
-OnHidInterfaceArrival(
+OnUsbInterfaceArrival(
     _In_ HCMNOTIFICATION notification,
     _In_opt_ PVOID context,
     _In_ CM_NOTIFY_ACTION action,
@@ -189,11 +152,9 @@ OnHidInterfaceArrival(
 {
     UNREFERENCED_PARAMETER(notification);
     UNREFERENCED_PARAMETER(context);
+    UNREFERENCED_PARAMETER(eventData);
     UNREFERENCED_PARAMETER(eventDataSize);
-    if (action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL &&
-        IsTrackpadPath(eventData->u.DeviceInterface.SymbolicLink)) {
-        SetEvent(g_wakeEvent);
-    }
+    if (action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL) SetEvent(g_wakeEvent);
     return ERROR_SUCCESS;
 }
 
@@ -228,21 +189,21 @@ ServiceControl(_In_ DWORD control, _In_ DWORD eventType, _In_ LPVOID eventData, 
 static void
 RunLoop(void)
 {
-    HCMNOTIFICATION notification = NULL;
+    HCMNOTIFICATION usbNotification = NULL;
     CM_NOTIFY_FILTER filter;
     HANDLE events[2];
 
     ZeroMemory(&filter, sizeof(filter));
     filter.cbSize = sizeof(filter);
     filter.FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE;
-    HidD_GetHidGuid(&filter.u.DeviceInterface.ClassGuid);
-    if (CM_Register_Notification(&filter, NULL, OnHidInterfaceArrival, &notification) != CR_SUCCESS) {
-        notification = NULL;
+    filter.u.DeviceInterface.ClassGuid = GUID_AMTPTP_BATTERY_USB;
+    if (CM_Register_Notification(&filter, NULL, OnUsbInterfaceArrival, &usbNotification) != CR_SUCCESS) {
+        usbNotification = NULL;
     }
 
     events[0] = g_stopEvent;
     events[1] = g_wakeEvent;
-    ScanTrackpads();
+    ScanUsbTrackpads();
     for (;;) {
         DWORD wait = WaitForMultipleObjects(ARRAYSIZE(events), events, FALSE, POLL_INTERVAL_MS);
         if (wait == WAIT_OBJECT_0) break;
@@ -250,10 +211,10 @@ RunLoop(void)
             // Give the trackpad time to finish connecting before asking.
             if (WaitForSingleObject(g_stopEvent, ARRIVAL_DELAY_MS) == WAIT_OBJECT_0) break;
         }
-        ScanTrackpads();
+        ScanUsbTrackpads();
     }
 
-    if (notification != NULL) CM_Unregister_Notification(notification);
+    if (usbNotification != NULL) CM_Unregister_Notification(usbNotification);
 }
 
 static void WINAPI
@@ -285,7 +246,7 @@ wmain(_In_ int argc, _In_reads_(argc) wchar_t** argv)
     // "--once" reads and publishes the level once, for testing from a console.
     if (argc > 1 && _wcsicmp(argv[1], L"--once") == 0) {
         g_console = TRUE;
-        ScanTrackpads();
+        ScanUsbTrackpads();
         return 0;
     }
     return StartServiceCtrlDispatcherW(table) ? 0 : (int)GetLastError();

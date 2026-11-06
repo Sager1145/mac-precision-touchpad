@@ -29,7 +29,8 @@ To remove this package, use the exact published INF name recorded above:
 
     pnputil /delete-driver oemNN.inf /uninstall
 
-Optional: show the Bluetooth battery level in Windows Settings. Copy
+Optional: show the battery level over USB in Windows Settings (over Bluetooth
+the driver shows it without this service). Copy
 AmtPtpBatteryService.exe to a folder only administrators can change, such as
 C:\Program Files\Mac Precision Touchpad\driver, then in an administrator
 terminal:

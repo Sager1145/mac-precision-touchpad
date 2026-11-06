@@ -1,8 +1,8 @@
-# Install Mac Precision Touchpad v0.2.2
+# Install Mac Precision Touchpad v0.3.0
 
 This fork supports Magic Trackpad 3 USB-C over USB and Bluetooth on Windows
 10/11 x64 and ARM64. Download the `setup.exe` asset from
-https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.2.2
+https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.3.0
 and the matching SHA256SUMS.txt. Setup selects the native architecture.
 Separate `x64-driver.zip` and `arm64-driver.zip` downloads support manual installation.
 
@@ -70,9 +70,12 @@ Only SYSTEM and Administrators can open this folder, because the logs record
 user and machine names. Each log keeps one previous copy once it passes 1 MB.
 
 Setup also installs the `AmtPtpBattery` service, which shows the trackpad's
-Bluetooth battery level in Settings › Bluetooth & devices. It reads the level
-through the standard Windows HID API every five minutes and when the trackpad
-connects. It runs as LocalSystem with only the basic service privilege,
+battery level over USB in Settings › Bluetooth & devices. It reads the level
+from the trackpad's interface 0 (bound to WinUSB by the driver package) every
+five minutes and when the trackpad is plugged in. Over Bluetooth the driver's
+Bluetooth filter shows the level from the trackpad's own reports; nothing asks
+a Bluetooth trackpad for it, because that request can crash Windows' Bluetooth
+HID driver. It runs as LocalSystem with only the basic service privilege,
 because storing the level for Settings needs administrator rights. Setup
 stops it before an upgrade, and uninstall removes it. If it cannot be
 installed, the driver install still succeeds without the battery display.

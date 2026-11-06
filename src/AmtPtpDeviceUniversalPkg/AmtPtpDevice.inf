@@ -88,14 +88,32 @@ AmtPtpHidFilter.sys   = 1,,
 %AmtPtpDeviceUsbUm.DeviceDesc%=AmtPtpDeviceUsbUm_Magic, USB\Vid_05ac&Pid_0265&MI_01
 ; Magic Trackpad 3 (USB-C, 2024)
 %AmtPtpDeviceUsbUm.DeviceDesc%=AmtPtpDeviceUsbUm_Magic, USB\Vid_05ac&Pid_0324&MI_01
-; Magic Trackpad 3 (USB-C) interface 0 has an invalid HID report descriptor
-; (hidusb fails to start with Code 10). Bind a null device so it is ignored.
-%AmtPtpHidFilter.NullDeviceDesc%=AmtPtpHidFilter_NullDevice, USB\Vid_05ac&Pid_0324&MI_00
+; Interface 0 carries the battery report (input report 0x90: [0x90][status][charge]), but
+; its HID report descriptor is invalid for Windows' HID parser (hidusb fails with Code 10).
+; It runs WinUSB instead, and AmtPtpBattery asks for the report with a HID class GET_REPORT
+; control request, then shows the level in Settings > Bluetooth & devices.
+%AmtPtpBattery.UsbDesc%=AmtPtpBattery_Usb, USB\Vid_05ac&Pid_0324&MI_00
+%AmtPtpBattery.UsbDesc%=AmtPtpBattery_Usb, USB\Vid_05ac&Pid_0265&MI_00
 ; Magic Trackpad 2 Bluetooth
 %AmtPtpHidFilter.DeviceDesc%=AmtPtpHidFilter_MiniPortDevice, HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0265&Col01
 %AmtPtpHidFilter.DeviceDesc%=AmtPtpHidFilter_MiniPortDevice, HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0324&Col01
 %AmtPtpHidFilter.NullDeviceDesc%=AmtPtpHidFilter_NullDevice, HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0265&Col02
 %AmtPtpHidFilter.NullDeviceDesc%=AmtPtpHidFilter_NullDevice, HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0324&Col02
+
+; Battery interface (USB interface 0): WinUSB, with the interface GUID AmtPtpBattery looks for.
+[AmtPtpBattery_Usb.NT]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[AmtPtpBattery_Usb.NT.HW]
+AddReg = AmtPtpBattery_UsbReg
+
+[AmtPtpBattery_UsbReg]
+HKR,,"DeviceInterfaceGUIDs",0x00010000,"{3D6E6B1C-9A4F-4C2E-8B7D-5E1F2A9C0324}"
+
+[AmtPtpBattery_Usb.NT.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
 
 ; Null Device
 [AmtPtpHidFilter_NullDevice]
@@ -299,4 +317,5 @@ WudfRdDisplayName = "Windows Driver Foundation - User-mode Driver Framework Refl
 AmtPtpHidRootDevice.DeviceDesc = "Apple Multi-touch Trackpad HID Device"
 AmtPtpHidFilter.DeviceDesc = "Apple Multi-touch Trackpad HID Filter"
 AmtPtpHidFilter.NullDeviceDesc = "Apple Multi-touch Auxiliary Services"
+AmtPtpBattery.UsbDesc = "Magic Trackpad Battery (USB)"
 AmtPtpHidFilter.SVCDESC = "Apple Multi-touch Trackpad HID Filter Service"
