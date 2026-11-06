@@ -260,30 +260,40 @@ PtpFilterInputRequestCompletionCallback(
         // while still configured, including a transient link loss, need retry.
         KeAcquireSpinLock(&ctx->InputLock, &oldIrql);
         if (!ctx->Stopping && ctx->DeviceConfigured) {
+            // The link is gone (out of range, switched off, paired elsewhere):
+            // don't hammer HidBth with 20 ms reads. Reconfigure once it answers
+            // again; the recovery timer backs off while it doesn't.
+            BOOLEAN linkLost = status == STATUS_DEVICE_NOT_CONNECTED ||
+                status == STATUS_NO_SUCH_DEVICE || status == STATUS_DEVICE_DOES_NOT_EXIST ||
+                status == STATUS_DEVICE_REMOVED;
             LONG failures = InterlockedIncrement(&ctx->ReadErrorCount);
-            if (failures >= 4) ctx->DeviceConfigured = FALSE;
-            TraceLoggingWrite(g_PtpBluetoothTrace, "ReadRecovery", TraceLoggingInt32(failures, "Failures"));
-            retryMs = failures < 4 ? 20 : 500;
+            if (linkLost || failures >= 4) ctx->DeviceConfigured = FALSE;
+            TraceLoggingWrite(g_PtpBluetoothTrace, "ReadRecovery", TraceLoggingInt32(failures, "Failures"),
+                TraceLoggingBoolean(linkLost, "LinkLost"));
+            retryMs = linkLost ? 2000 : (failures < 4 ? 20 : 500);
         }
         KeReleaseSpinLock(&ctx->InputLock, oldIrql);
         goto cleanup;
     }
-    if (!ctx->DeviceConfigured) goto cleanup;
-    InterlockedExchange(&ctx->ReadErrorCount, 0);
     length = (size_t)WdfRequestGetInformation(Request);
     buffer = WdfMemoryGetBuffer(rawMemory, &capacity);
     if (length == 0 || length > capacity || buffer == NULL) goto cleanup;
+    // The trackpad sends its battery report as it connects, which on a first
+    // pair can be before multitouch mode is set. Keep it even then.
+    if (ctx->VendorID == HID_VID_APPLE_BT && buffer[0] == 0x90) {
+        UCHAR batteryLevel;
+        if (PtpFilterBatteryParse(buffer, length, &batteryLevel)) PtpFilterBatteryRecord(ctx, batteryLevel);
+        if (!ctx->DeviceConfigured) goto cleanup;
+    }
+    if (!ctx->DeviceConfigured) goto cleanup;
+    InterlockedExchange(&ctx->ReadErrorCount, 0);
     TraceLoggingWrite(g_PtpBluetoothTrace, "PhysicalPacket",
         TraceLoggingLevel(PTP_TRACE_LEVEL_VERBOSE), TraceLoggingKeyword(PTP_TRACE_KEYWORD_INPUT),
         TraceLoggingBinary(buffer, (ULONG)length, "Packet"));
     if (buffer[0] != (ctx->VendorID == HID_VID_APPLE_BT ? 0x31 : 0x02)) {
-        UCHAR batteryLevel;
-        // The trackpad also sends its battery report unprompted while charging.
-        if (ctx->VendorID == HID_VID_APPLE_BT && PtpFilterBatteryParse(buffer, length, &batteryLevel)) {
-            PtpFilterBatteryRecord(ctx, batteryLevel);
-        }
+        // Battery reports (0x90) were taken above.
         // If firmware has returned to mouse mode, restore multitouch mode.
-        else if (ctx->VendorID == HID_VID_APPLE_BT && buffer[0] == 0x02) {
+        if (ctx->VendorID == HID_VID_APPLE_BT && buffer[0] == 0x02) {
             KeAcquireSpinLock(&ctx->InputLock, &oldIrql);
             ctx->DeviceConfigured = FALSE;
             continuePump = FALSE;

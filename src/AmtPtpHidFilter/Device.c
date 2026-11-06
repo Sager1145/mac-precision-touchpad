@@ -347,11 +347,14 @@ PtpFilterConfigureMultiTouch(
 
     UCHAR hidPacketBuffer[HID_XFER_PACKET_SIZE];
     PHID_XFER_PACKET pHidPacket;
+    PHID_XFER_PACKET pSentPacket;
     WDFMEMORY hidMemory;
     WDF_OBJECT_ATTRIBUTES attributes;
     WDF_REQUEST_SEND_OPTIONS configRequestSendOptions;
-    WDFREQUEST configRequest;
+    WDFREQUEST configRequest = NULL;
     PIRP pConfigIrp = NULL;
+    PMDL reportMdl = NULL;
+    PIO_STACK_LOCATION nextStack;
 
     PAGED_CODE();
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Entry");
@@ -430,23 +433,28 @@ PtpFilterConfigureMultiTouch(
         goto exit;
     }
 
+    // The packet and report live in nonpaged pool owned by the request, never on
+    // this stack: HidBth may map the report through the MDL below.
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
     attributes.ParentObject = configRequest;
-    status = WdfMemoryCreatePreallocated(&attributes, (PVOID) pHidPacket, HID_XFER_PACKET_SIZE, &hidMemory);
+    status = WdfMemoryCreate(&attributes, NonPagedPoolNx, PTP_LIST_POOL_TAG, HID_XFER_PACKET_SIZE,
+        &hidMemory, (PVOID*)&pSentPacket);
     if (!NT_SUCCESS(status)) {
-        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfMemoryCreatePreallocated failed, Status = %!STATUS!", status);
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfMemoryCreate failed, Status = %!STATUS!", status);
         goto cleanup;
     }
+    RtlCopyMemory(pSentPacket, pHidPacket, HID_XFER_PACKET_SIZE);
+    pSentPacket->reportBuffer = (PUCHAR)pSentPacket + sizeof(HID_XFER_PACKET);
 
+    // No WDF buffers: the request is laid out by hand below, as HIDCLASS does.
     status = WdfIoTargetFormatRequestForInternalIoctl(deviceContext->HidIoTarget,
         configRequest, IOCTL_HID_SET_FEATURE,
-        hidMemory, NULL, NULL, NULL);
+        NULL, NULL, NULL, NULL);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfIoTargetFormatRequestForInternalIoctl failed, Status = %!STATUS!", status);
         goto cleanup;
     }
-    
-    // Manually take care of IRP to meet requirements of mini drivers.
+
     pConfigIrp = WdfRequestWdmGetIrp(configRequest);
     if (pConfigIrp == NULL) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfRequestWdmGetIrp failed");
@@ -454,8 +462,25 @@ PtpFilterConfigureMultiTouch(
         goto cleanup;
     }
 
-    // God-damn-it we have to configure it by ourselves :)
-    pConfigIrp->UserBuffer = pHidPacket;
+    // Lay the IRP out the way HIDCLASS hands a SET report to a minidriver:
+    // UserBuffer is the HID_XFER_PACKET and InputBufferLength its size (this
+    // driver's own SET_FEATURE handler, Hid.c, checks exactly that), with an
+    // MDL describing the report as a user-mode HidD_SetFeature IRP carries. A
+    // report request without an MDL is what crashed Windows in
+    // hidbth!HidBthGetReportFlowCompletion (it read the size field of a NULL
+    // MDL), so never send one.
+    reportMdl = IoAllocateMdl(pSentPacket->reportBuffer, pSentPacket->reportBufferLen, FALSE, FALSE, NULL);
+    if (reportMdl == NULL) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto cleanup;
+    }
+    MmBuildMdlForNonPagedPool(reportMdl);
+    pConfigIrp->MdlAddress = reportMdl;
+    pConfigIrp->UserBuffer = pSentPacket;
+    nextStack = IoGetNextIrpStackLocation(pConfigIrp);
+    nextStack->Parameters.DeviceIoControl.InputBufferLength = sizeof(HID_XFER_PACKET);
+    nextStack->Parameters.DeviceIoControl.OutputBufferLength = 0;
+    nextStack->Parameters.DeviceIoControl.Type3InputBuffer = pSentPacket;
 
     WDF_REQUEST_SEND_OPTIONS_INIT(&configRequestSendOptions, WDF_REQUEST_SEND_OPTION_SYNCHRONOUS);
     WDF_REQUEST_SEND_OPTIONS_SET_TIMEOUT(&configRequestSendOptions, WDF_REL_TIMEOUT_IN_SEC(2));
@@ -469,6 +494,12 @@ PtpFilterConfigureMultiTouch(
     }
 
 cleanup:
+    if (reportMdl != NULL) {
+        // The synchronous send has returned (WDF waits for a timed-out request
+        // to complete), so nothing below still uses the MDL.
+        pConfigIrp->MdlAddress = NULL;
+        IoFreeMdl(reportMdl);
+    }
     if (configRequest != NULL) {
         WdfObjectDelete(configRequest);
     }
@@ -505,7 +536,10 @@ PtpFilterRecoveryTimerCallback(
             return;
         }
         if (!NT_SUCCESS(status)) {
-            WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(500));
+            // Back off while the trackpad doesn't answer (disconnected), so
+            // HidBth isn't sent a SET_FEATURE every 500 ms indefinitely.
+            LONG failures = InterlockedIncrement(&deviceContext->ReadErrorCount);
+            WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(failures < 8 ? 500 : 5000));
             KeReleaseSpinLock(&deviceContext->InputLock, irql);
             return;
         }

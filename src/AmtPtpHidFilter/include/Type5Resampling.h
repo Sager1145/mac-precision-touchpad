@@ -35,7 +35,28 @@ PtpFilterResampleOnSample(PTP_RESAMPLE_STATE* State, const PTP_REPORT* Sample,
     if (State->HasSample && (Source < State->SourceTime ||
         Arrival - State->ArrivalTime >= Frequency * PTP_RESAMPLE_STALE_MS / 1000)) {
         RtlZeroMemory(State->Fingers, sizeof(State->Fingers));
-        State->HasSample = State->HasTarget = FALSE;
+        State->HasSample = State->HasTarget = State->HasOffset = FALSE;
+    }
+    // Map the trackpad's clock onto QPC. A packet can only be late, never early,
+    // so follow a new minimum at once and drift up slowly (clock skew, outliers).
+    LONGLONG offset = Arrival - Source;
+    if (!State->HasOffset || offset < State->ClockOffset) State->ClockOffset = offset;
+    else State->ClockOffset += (offset - State->ClockOffset) / 256;
+    State->HasOffset = TRUE;
+    {
+        // Lateness beyond the minimum (Bluetooth bursts). Rise over a few packets,
+        // decay over a few seconds, so the delay neither stalls nor jumps.
+        LONGLONG late = offset - State->ClockOffset;
+        LONGLONG cap = Frequency * PTP_RESAMPLE_DELAY_MAX_MS / 1000;
+        if (late > cap) late = cap;
+        if (late > State->Jitter) State->Jitter += (late - State->Jitter) / 4;
+        else State->Jitter -= State->Jitter / 256;
+    }
+    // Typical spacing of the trackpad's samples (its own clock), for the delay.
+    if (State->HasSample && Source > State->SourceTime &&
+        Source - State->SourceTime < Frequency / 10) {
+        LONGLONG dt = Source - State->SourceTime;
+        State->Interval = State->Interval ? State->Interval + (dt - State->Interval) / 16 : dt;
     }
     BOOLEAN transition = !State->HasSample || State->Button != Sample->IsButtonClicked;
     ULONG i;
@@ -90,9 +111,26 @@ PtpFilterResamplePosition(const PTP_RESAMPLE_FINGER* Finger, LONGLONG Target,
         const PTP_HISTORY_POINT* a = &Finger->History[i - 1];
         const PTP_HISTORY_POINT* b = &Finger->History[i];
         if (Target <= b->Time) {
+            // Cubic Hermite (non-uniform Catmull-Rom) between a and b, so curves
+            // stay round instead of becoming a polygon of straight chords.
+            // Tangents are scaled to the segment: displacement over den ticks.
+            const PTP_HISTORY_POINT* p = i >= 2 ? &Finger->History[i - 2] : a;
+            const PTP_HISTORY_POINT* n = i + 1 < Finger->Count ? &Finger->History[i + 1] : b;
             LONGLONG den = b->Time - a->Time, t = Target - a->Time;
-            *X = (LONG)(((LONGLONG)a->X * (den - t) + (LONGLONG)b->X * t + den / 2) / den);
-            *Y = (LONG)(((LONGLONG)a->Y * (den - t) + (LONGLONG)b->Y * t + den / 2) / den);
+            LONGLONG spanA = b->Time - p->Time, spanB = n->Time - a->Time;
+            LONGLONG tax = spanA > 0 ? ((LONGLONG)b->X - p->X) * den / spanA : 0;
+            LONGLONG tay = spanA > 0 ? ((LONGLONG)b->Y - p->Y) * den / spanA : 0;
+            LONGLONG tbx = spanB > 0 ? ((LONGLONG)n->X - a->X) * den / spanB : 0;
+            LONGLONG tby = spanB > 0 ? ((LONGLONG)n->Y - a->Y) * den / spanB : 0;
+            LONGLONG s = den > 0 ? t * 65536 / den : 65536;
+            LONGLONG s2 = s * s / 65536, s3 = s2 * s / 65536;
+            LONGLONG h00 = 2 * s3 - 3 * s2 + 65536, h10 = s3 - 2 * s2 + s;
+            LONGLONG h01 = -2 * s3 + 3 * s2, h11 = s3 - s2;
+            LONGLONG x = h00 * a->X + h10 * tax + h01 * b->X + h11 * tbx;
+            LONGLONG y = h00 * a->Y + h10 * tay + h01 * b->Y + h11 * tby;
+            // Round half away from zero; clamped to the surface by the caller.
+            *X = (LONG)((x >= 0 ? x + 32768 : x - 32768) / 65536);
+            *Y = (LONG)((y >= 0 ? y + 32768 : y - 32768) / 65536);
             return;
         }
     }
@@ -115,7 +153,16 @@ PtpFilterResampleBuild(PTP_RESAMPLE_STATE* State, LONGLONG Now, LONGLONG Frequen
     if (!State->HasSample || Frequency <= 0 ||
         Now - State->ArrivalTime >= Frequency * PTP_RESAMPLE_STALE_MS / 1000) return;
     Report->IsButtonClicked = State->Button;
-    LONGLONG target = State->SourceTime + (Now - State->ArrivalTime) - Frequency * PTP_RESAMPLE_DELAY_MS / 1000;
+    // Play back on the trackpad's clock (Now - ClockOffset), not relative to the
+    // last arrival: Bluetooth delivers in bursts, and anchoring to arrivals made
+    // the playback speed jump with every packet. The delay covers one sample
+    // interval plus typical lateness, so the target nearly always lies between
+    // two real samples and is interpolated rather than guessed.
+    LONGLONG delay = State->Interval + State->Jitter + Frequency * 2 / 1000;
+    if (delay < Frequency * PTP_RESAMPLE_DELAY_MIN_MS / 1000) delay = Frequency * PTP_RESAMPLE_DELAY_MIN_MS / 1000;
+    if (delay > Frequency * PTP_RESAMPLE_DELAY_MAX_MS / 1000) delay = Frequency * PTP_RESAMPLE_DELAY_MAX_MS / 1000;
+    LONGLONG target = State->HasOffset ? Now - State->ClockOffset - delay :
+        State->SourceTime + (Now - State->ArrivalTime) - delay;
     LONGLONG horizon = State->SourceTime + Frequency * PTP_RESAMPLE_EXTRAP_MS / 1000;
     if (target > horizon) target = horizon;
     if (State->HasTarget && target < State->LastTarget) target = State->LastTarget;

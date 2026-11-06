@@ -123,6 +123,12 @@ FilterEvtIoStop(
 )
 {
     UNREFERENCED_PARAMETER(Queue);
-    UNREFERENCED_PARAMETER(Request);
     UNREFERENCED_PARAMETER(ActionFlags);
+
+    // The only requests this queue still owns while stopping are GET_STRING
+    // requests already sent to the transport (reads move to HidReadQueue, and
+    // everything else completes inline). Cancel them so an unresponsive
+    // trackpad can't hold up sleep or removal until HidBth times them out;
+    // PtpFilterForwardCompletion then completes them.
+    WdfRequestCancelSentRequest(Request);
 }

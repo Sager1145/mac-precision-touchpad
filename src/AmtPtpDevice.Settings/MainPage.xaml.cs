@@ -65,17 +65,15 @@ namespace AmtPtpDevice.Settings
 
         private async void OnBatteryAvailable(object sender, EventArgs e)
         {
-            var bReport = await m_battery.Device.GetInputReportAsync(0x90);
-            var ptr = Marshal.AllocHGlobal((int) bReport.Data.Length);
-            Marshal.Copy(bReport.Data.ToArray(), 0, ptr, (int) bReport.Data.Length);
-
-            var battReport = Marshal.PtrToStructure<Mt2BatteryStatusReport>(ptr);
+            // Never ask the trackpad for report 0x90 (GetInputReportAsync). Over
+            // Bluetooth that GET_INPUT_REPORT reaches HidBth and can crash Windows
+            // in hidbth!HidBthGetReportFlowCompletion. Over USB the battery
+            // interface runs WinUSB, so no HID collection matches here anyway.
+            // The level is shown in Settings > Bluetooth & devices instead.
             await Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
             {
-                m_battStatus.Text = $"Battery is {battReport.ChargeStatus}% charged.";
+                m_battStatus.Text = "Battery level is shown in Settings > Bluetooth & devices.";
             });
-
-            Marshal.FreeHGlobal(ptr);
         }
 
         private async void OnInputDeviceLost(object sender, EventArgs e)
