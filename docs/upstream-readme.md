@@ -1,7 +1,7 @@
 # Windows Precision Touchpad Implementation for Apple MacBook family/Magic Trackpad 2
 
-**Sager1145 fork:** the [v0.1.0-preview.1 release](https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.1.0-preview.1)
-adds smoother USB resampling for Magic Trackpad 3 while preserving flick momentum.
+**Sager1145 fork:** the [latest release (v0.3.1)](https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.3.1)
+adds Magic Trackpad 3 support over USB and Bluetooth, with smooth resampling that preserves flick momentum.
 The x64 package is **test-signed, not Microsoft/WHQL production-signed**.
 Follow the [fork installation instructions](docs/test-signed-installation.md);
 the upstream installation/signing notes below describe upstream releases.
