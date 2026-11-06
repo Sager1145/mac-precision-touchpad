@@ -53,6 +53,7 @@ PtpFilterCreateDevice(
     deviceContext->WdmDeviceObject = WdfDeviceWdmGetDeviceObject(device);
     if (deviceContext->WdmDeviceObject == NULL) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "WdfDeviceWdmGetDeviceObject failed");
+        status = STATUS_UNSUCCESSFUL;
         goto exit;
     }
 
@@ -208,7 +209,6 @@ PtpFilterDeviceD0Exit(
     KeReleaseSpinLock(&deviceContext->InputLock, irql);
     WdfTimerStop(deviceContext->HidTransportRecoveryTimer, TRUE);
     WdfTimerStop(deviceContext->ResamplingTimer, TRUE);
-    WdfWorkItemFlush(deviceContext->BatteryWorkItem);
     // Only the worker submits reads. Flush it before cancelling a sent read.
     WdfWorkItemFlush(deviceContext->HidTransportRecoveryWorkItem);
     if (deviceContext->HidIoTarget != NULL) {
@@ -216,6 +216,8 @@ PtpFilterDeviceD0Exit(
     }
     WdfIoTargetStop(WdfDeviceGetIoTarget(Device), WdfIoTargetCancelSentIo);
     KeWaitForSingleObject(&deviceContext->TransportIdle, Executive, KernelMode, FALSE, NULL);
+    // No read can complete now, so nothing re-queues the battery work item after this.
+    WdfWorkItemFlush(deviceContext->BatteryWorkItem);
 
     // Cancelling all outstanding requests
     TraceLoggingWrite(g_PtpBluetoothTrace, "PowerExit");
@@ -251,7 +253,7 @@ PtpFilterSelfManagedIoInit(
     status = PtpFilterDetourWindowsHIDStack(Device);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! PtpFilterDetourWindowsHIDStack failed, Status = %!STATUS!", status);
-        goto exit;
+        goto fail;
     }
 
     // Request device attribute descriptor for self-identification.
@@ -268,7 +270,7 @@ PtpFilterSelfManagedIoInit(
         NULL, &hidAttributeMemoryDescriptor, NULL, NULL);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfIoTargetSendInternalIoctlSynchronously failed, Status = %!STATUS!", status);
-        goto exit;
+        goto fail;
     }
 
     deviceContext->VendorID = deviceAttributes.VendorID;
@@ -291,6 +293,12 @@ PtpFilterSelfManagedIoInit(
     TraceLoggingWrite(g_PtpBluetoothTrace, "ConfiguredInitial");
     WdfTimerStart(deviceContext->ResamplingTimer, WDF_REL_TIMEOUT_IN_MS(PTP_RESAMPLE_PERIOD_MS));
     WdfWorkItemEnqueue(deviceContext->HidTransportRecoveryWorkItem);
+    goto exit;
+
+fail:
+    // Don't rely on SelfManagedIoCleanup after a failed init: drop the
+    // reference on HidBth's device and the proxy now (release is idempotent).
+    PtpFilterReleaseWindowsHIDStack(Device);
 
 exit:
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Exit, Status = %!STATUS!", status);
@@ -537,9 +545,11 @@ PtpFilterRecoveryTimerCallback(
         }
         if (!NT_SUCCESS(status)) {
             // Back off while the trackpad doesn't answer (disconnected), so
-            // HidBth isn't sent a SET_FEATURE every 500 ms indefinitely.
+            // HidBth isn't sent a SET_FEATURE every 500 ms indefinitely. Keep
+            // the long interval short: this timer is the only thing that
+            // notices the trackpad coming back.
             LONG failures = InterlockedIncrement(&deviceContext->ReadErrorCount);
-            WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(failures < 8 ? 500 : 5000));
+            WdfTimerStart(Timer, WDF_REL_TIMEOUT_IN_MS(failures < 8 ? 500 : 1000));
             KeReleaseSpinLock(&deviceContext->InputLock, irql);
             return;
         }

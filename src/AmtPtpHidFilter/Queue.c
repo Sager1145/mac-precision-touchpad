@@ -125,10 +125,12 @@ FilterEvtIoStop(
     UNREFERENCED_PARAMETER(Queue);
     UNREFERENCED_PARAMETER(ActionFlags);
 
-    // The only requests this queue still owns while stopping are GET_STRING
-    // requests already sent to the transport (reads move to HidReadQueue, and
-    // everything else completes inline). Cancel them so an unresponsive
-    // trackpad can't hold up sleep or removal until HidBth times them out;
-    // PtpFilterForwardCompletion then completes them.
+    // This filter's default queue is not power-managed, so this runs only
+    // when the queue is purged at removal, not on sleep (D0Exit stops the
+    // transport target for that). A request still owned here is normally a
+    // GET_STRING already sent to the transport: cancel it so removal doesn't
+    // wait for HidBth to time it out; PtpFilterForwardCompletion completes it.
+    // For a request not sent yet this returns FALSE and does nothing; it
+    // leaves the queue moments later on its own.
     WdfRequestCancelSentRequest(Request);
 }

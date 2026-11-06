@@ -45,15 +45,16 @@ USB keeps its own resampler and its 12 ms delay.
   every 500 ms, forever. Disconnect errors now pause reads for 2 s, and the
   multitouch request backs off to every 5 s after eight attempts. The
   trackpad still reconnects by itself.
-- **Sleep no longer waits on an unresponsive trackpad.** A device-name
-  request forwarded to the trackpad could hold up sleep or removal until
-  Windows timed it out. The filter now cancels it when the device stops.
-- **Battery level after a first pair.** The trackpad sends its battery report
-  as it connects. On a first pair that can arrive before the filter has
-  switched the trackpad to multitouch mode, and the filter dropped it. Battery
-  reports are now kept either way.
-- **Settings app.** The legacy settings app no longer asks the trackpad for
-  its battery report.
+- **Removal no longer waits on an unresponsive trackpad.** A device-name
+  request forwarded to the trackpad could hold up removal until Windows timed
+  it out. The filter now cancels it when the device is removed. (Sleep was
+  already covered: the filter cancels its transport requests on power-down.)
+- **Battery level after a first pair.** The legacy settings app asked the
+  trackpad for its battery report over Bluetooth; it no longer does, and after
+  a first pair the level now shows. The filter also gained a change meant to
+  keep battery reports that arrive before multitouch mode is set, but the
+  filter doesn't read the trackpad until then, so that change had no effect.
+  It is removed after v0.3.1.
 
 ## Checked
 

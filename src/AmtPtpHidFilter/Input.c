@@ -278,14 +278,13 @@ PtpFilterInputRequestCompletionCallback(
     length = (size_t)WdfRequestGetInformation(Request);
     buffer = WdfMemoryGetBuffer(rawMemory, &capacity);
     if (length == 0 || length > capacity || buffer == NULL) goto cleanup;
-    // The trackpad sends its battery report as it connects, which on a first
-    // pair can be before multitouch mode is set. Keep it even then.
+    // Reads only run while configured; one completing after that was cancelled
+    // by power-down, so drop it (and don't queue battery work behind D0Exit).
+    if (!ctx->DeviceConfigured) goto cleanup;
     if (ctx->VendorID == HID_VID_APPLE_BT && buffer[0] == 0x90) {
         UCHAR batteryLevel;
         if (PtpFilterBatteryParse(buffer, length, &batteryLevel)) PtpFilterBatteryRecord(ctx, batteryLevel);
-        if (!ctx->DeviceConfigured) goto cleanup;
     }
-    if (!ctx->DeviceConfigured) goto cleanup;
     InterlockedExchange(&ctx->ReadErrorCount, 0);
     TraceLoggingWrite(g_PtpBluetoothTrace, "PhysicalPacket",
         TraceLoggingLevel(PTP_TRACE_LEVEL_VERBOSE), TraceLoggingKeyword(PTP_TRACE_KEYWORD_INPUT),

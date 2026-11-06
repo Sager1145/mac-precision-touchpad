@@ -2,13 +2,13 @@
   #error PackageRoot must point to the prepared release directory
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.3.1"
+  #define AppVersion "0.3.2"
 #endif
 [Setup]
 AppId={{B9DA7434-8AF2-4F63-84D8-179566B48BD5}
 AppName=Mac Precision Touchpad (Sager1145)
 AppVersion={#AppVersion}
-VersionInfoVersion=0.3.1.0
+VersionInfoVersion=0.3.2.0
 AppPublisher=Sager1145
 AppPublisherURL=https://github.com/Sager1145/mac-precision-touchpad
 AppSupportURL=https://github.com/Sager1145/mac-precision-touchpad/issues

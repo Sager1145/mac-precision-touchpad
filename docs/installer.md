@@ -1,8 +1,8 @@
-# Install Mac Precision Touchpad v0.3.1
+# Install Mac Precision Touchpad v0.3.2
 
 This fork supports Magic Trackpad 3 USB-C over USB and Bluetooth on Windows
 10/11 x64 and ARM64. Download the `setup.exe` asset from
-https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.3.1
+https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.3.2
 and the matching SHA256SUMS.txt. Setup selects the native architecture.
 Separate `x64-driver.zip` and `arm64-driver.zip` downloads support manual installation.
 

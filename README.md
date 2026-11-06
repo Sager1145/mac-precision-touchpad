@@ -6,9 +6,9 @@ This fork focuses on **Magic Trackpad 3 USB-C over USB and Bluetooth**: smooth c
 
 ## Download and install
 
-**[Download v0.3.1](https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.3.1)** for Windows 10/11 x64 and ARM64.
+**[Download v0.3.2](https://github.com/Sager1145/mac-precision-touchpad/releases/tag/v0.3.2)** for Windows 10/11 x64 and ARM64.
 
-Choose `mac-precision-touchpad-v0.3.1-setup.exe`. Setup selects the native x64 or ARM64 package automatically. It provides previous-driver backups, logs, upgrades and an Installed apps uninstall entry. SHA-256 checksums are available for every download.
+Choose `mac-precision-touchpad-v0.3.2-setup.exe`. Setup selects the native x64 or ARM64 package automatically. It provides previous-driver backups, logs, upgrades and an Installed apps uninstall entry. SHA-256 checksums are available for every download.
 
 **This release uses WDK test signing.** Prepare Windows to load test-signed drivers before running Setup. The installer checks the active policy and offers certificate trust as an optional task.
 
@@ -46,7 +46,7 @@ in the extracted directory. The repository also retains a prebuilt
 | Bluetooth battery level in Settings | From the trackpad's own battery reports, via the Bluetooth filter |
 | USB battery level in Settings | Confirmed on USB (v0.3.0), via the battery service |
 
-v0.3.1 was installed and checked on x64 with Magic Trackpad 3 over Bluetooth and USB, including smooth circles over Bluetooth and the battery level after a fresh pair. Live ARM64 input is not yet checked.
+v0.3.2 was installed and checked on x64 with Magic Trackpad 3 over Bluetooth: smooth circles, the battery level, and reconnecting after the trackpad is switched off and on. Live ARM64 input is not yet checked.
 
 Windows only reads battery levels natively from Bluetooth LE devices and headsets. The trackpad reports its charge in its own battery report (0x90):
 
@@ -59,7 +59,7 @@ Bluetooth uses device timestamps to preserve buffered packet spacing and retries
 
 The Bluetooth filter reads raw reports from the Windows Bluetooth HID transport. HIDCLASS hides that transport's own handler, so the filter calls the handler directly for its own requests through a private kernel-only device. Unlike upstream and v0.2.0, it no longer rewrites the shared Bluetooth HID driver's dispatch table, so other Bluetooth keyboards and mice are unaffected. A reboot clears the old patch after upgrading from v0.2.0 or earlier.
 
-See [USB/Bluetooth parity](docs/transport-parity.md), [Bluetooth implementation and testing](docs/bluetooth-trackpad-3.md), and the [v0.3.1](docs/release-v0.3.1.md) and [v0.3.0](docs/release-v0.3.0.md) release notes.
+See [USB/Bluetooth parity](docs/transport-parity.md), [Bluetooth implementation and testing](docs/bluetooth-trackpad-3.md), and the [v0.3.2](docs/release-v0.3.2.md), [v0.3.1](docs/release-v0.3.1.md) and [v0.3.0](docs/release-v0.3.0.md) release notes.
 
 ## Device support
 
