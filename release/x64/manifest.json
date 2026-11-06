@@ -1,25 +1,25 @@
 ﻿{
-    "Version":  "0.3.1",
-    "SourceCommit":  "0c800577492f2bf7b3558891bf7a47f4e99f8edb",
+    "Version":  "0.3.2",
+    "SourceCommit":  "56efca29956fbdfd563b46e395d3ec8d6523ef11",
     "Architecture":  "x64",
     "Signing":  "WDK test-signed",
     "CertificateThumbprint":  "94A13BEE28D788FC4A7FA91C568968C7DBADDC69",
     "Files":  [
                   {
                       "Name":  "AmtPtpDevice.inf",
-                      "SHA256":  "5967B33404CBE84740DAD3A38CE6A25D6D098CA9DEDA2803766636D9F9F37641"
+                      "SHA256":  "03ABADBE2A024E00857D98866D3170FF25C6E8E09779BDC085215BACE35C422E"
                   },
                   {
                       "Name":  "amtptpdevice.cat",
-                      "SHA256":  "3ACC0F5B7B3705EDB571A112E2621FBCEED44E5600ABA27D99E0C980382328F3"
+                      "SHA256":  "0D16DA6D26E7F0B98854FFF9B192D261D9CDCC5213474D2B035D38BF8059D64F"
                   },
                   {
                       "Name":  "AmtPtpHidFilter.inf",
-                      "SHA256":  "A1D666DE5712277ED54F31CF002490A476F2F2FEEF80887FF867BDA37DF31F58"
+                      "SHA256":  "67B75F3A19366B5741EB5C26E1FEBF8E5356AFF69BDA48075E3636E765CDC35F"
                   },
                   {
                       "Name":  "amtptphidfilter.cat",
-                      "SHA256":  "C8A3F87C80F04C3649359DC4CDF3CE64FDE4467CE7DDF5916925FAD8EA6DC15D"
+                      "SHA256":  "5BB4B6DD615FE4639F82F25D8A30BB1B16121AF89C5601540D09BB12BA3430B1"
                   },
                   {
                       "Name":  "AmtPtpDeviceUsbUm.dll",
@@ -27,7 +27,7 @@
                   },
                   {
                       "Name":  "AmtPtpHidFilter.sys",
-                      "SHA256":  "F229E67FB7B3AF82FEAC8F2F7084197D3B6C4CAFA6EAFE3BABE84D34AB8A2E13"
+                      "SHA256":  "2B4797D6017FCF05569A1057C573BADA3DDFEBC020F074C449217CDED002DE68"
                   },
                   {
                       "Name":  "AmtPtpDeviceUsbKm.sys",
